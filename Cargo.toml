@@ -1,0 +1,11 @@
+[package]
+name = "animepet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+gtk-layer-shell = "0.8"
+tiny_http = "0.12"
+cairo-rs = "0.18"

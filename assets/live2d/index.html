@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Anime Pet</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: transparent !important;
+        }
+        #landlord {
+            position: fixed;
+            left: 0;
+            bottom: 0;
+            width: 280px;
+            height: 250px;
+            z-index: 10000;
+        }
+        #live2d {
+            position: relative;
+        }
+
+        /* 对话气泡：半透明白底 + 柔和阴影 + 圆角 + 指向模型的小尾巴 */
+        .message {
+            opacity: 0;
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            bottom: 250px;
+            max-width: 230px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.6);
+            color: #3a3a3a;
+            border-radius: 14px;
+            font-size: 13px;
+            line-height: 1.55;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            box-sizing: border-box;
+            word-break: break-word;
+            z-index: 10;
+        }
+        .message::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 50%;
+            transform: translateX(-50%) rotate(45deg);
+            width: 10px;
+            height: 10px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div id="landlord">
+        <div class="message" style="opacity:0"></div>
+        <canvas id="live2d" width="280" height="250"></canvas>
+    </div>
+    <!-- Live2D 渲染循环每帧读取 live_talk 值，缺失会导致渲染循环崩溃 -->
+    <input type="hidden" id="live_talk" value="0">
+
+    <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script>
+        var message_Path = './';
+        var home_Path = 'https://example.com/';
+        var talkAPI = ''; // 聊天 API，空字符串表示禁用聊天功能
+    </script>
+    <script src="js/live2d.js"></script>
+    <script src="js/message.js"></script>
+    <script>
+        // 模型加载由 message.js 在纹理预加载后统一执行，这里不再重复调用 loadlive2d
+        // 独立实现拖拽（绕过 message.js 里 getEvent() 在现代 WebKitGTK 下失效的问题）
+        // 拖拽期间扩大输入区域，拖拽结束/恢复位置时通过 document.title 与 Rust 同步
+        (function () {
+            var landlord = document.getElementById('landlord');
+            var dragging = false;
+            var startX = 0, startY = 0, startLeft = 0, startBottom = 0;
+
+            landlord.addEventListener('mousedown', function (e) {
+                dragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                startLeft = parseInt(landlord.style.left) || 0;
+                startBottom = parseInt(landlord.style.bottom) || 0;
+                document.title = 'drag_start';
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', function (e) {
+                if (!dragging) return;
+                var dx = e.clientX - startX;
+                var dy = e.clientY - startY;
+                // bottom 是相对窗口底部的距离，向上拖 dy>0 则 bottom 增加
+                landlord.style.left = (startLeft + dx) + 'px';
+                landlord.style.bottom = (startBottom - dy) + 'px';
+            });
+
+            document.addEventListener('mouseup', function () {
+                if (!dragging) return;
+                dragging = false;
+                var left = parseInt(landlord.style.left) || 0;
+                var bottom = parseInt(landlord.style.bottom) || 0;
+                // 持久化位置，下次启动时由 message.js 读取恢复
+                sessionStorage.setItem('historywidth', left);
+                sessionStorage.setItem('historyheight', bottom);
+                document.title = 'drag_end:' + left + ',' + bottom;
+            });
+
+            // 启动时若 message.js 恢复了上次位置，通知 Rust 更新输入热区
+            // DOMContentLoaded 时 message.js 的 $(document).ready 已执行完毕
+            document.addEventListener('DOMContentLoaded', function () {
+                var left = parseInt(landlord.style.left) || 0;
+                var bottom = parseInt(landlord.style.bottom) || 0;
+                if (left !== 0 || bottom !== 0) {
+                    document.title = 'restore:' + left + ',' + bottom;
+                }
+            });
+        })();
+    </script>
+</body>
+</html>
