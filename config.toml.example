@@ -1,0 +1,4 @@
+# Copy this file to config.toml and fill in your DeepSeek key.
+api_key = "sk-your-key-here"
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"

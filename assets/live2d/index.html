@@ -4,6 +4,19 @@
     <meta charset="UTF-8">
     <title>Anime Pet</title>
     <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+        :root {
+            --chat-bg: rgba(31, 33, 38, .92);
+            --chat-surface: rgba(255, 255, 255, .07);
+            --chat-border: rgba(255, 255, 255, .16);
+            --chat-text: #f6f2ee;
+            --chat-muted: #aaaeb7;
+            --chat-coral: #e78b9d;
+            --chat-coral-hover: #f09bad;
+            --chat-mint: #75b9ad;
+        }
         html, body {
             margin: 0;
             padding: 0;
@@ -17,9 +30,18 @@
             width: 280px;
             height: 250px;
             z-index: 10000;
+            cursor: pointer;
+            touch-action: none;
+        }
+        #landlord::before {
+            content: '';
+            position: absolute;
+            inset: -14px;
+            pointer-events: auto;
         }
         #live2d {
             position: relative;
+            z-index: 1;
         }
 
         /* 对话气泡：半透明白底 + 柔和阴影 + 圆角 + 指向模型的小尾巴 */
@@ -53,6 +75,116 @@
             background: rgba(255, 255, 255, 0.6);
             border-radius: 2px;
         }
+
+        #chat-panel {
+            display: none;
+            position: fixed;
+            z-index: 19999;
+            grid-template-rows: 44px minmax(0, 1fr) auto;
+            width: min(316px, calc(100vw - 24px));
+            height: min(348px, calc(100vh - 24px));
+            min-height: 260px;
+            overflow: hidden;
+            color: var(--chat-text);
+            background: var(--chat-bg);
+            border: 1px solid var(--chat-border);
+            border-radius: 10px;
+            box-shadow: 0 18px 44px rgba(0, 0, 0, .32), 0 2px 8px rgba(0, 0, 0, .18);
+            font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            backdrop-filter: blur(18px) saturate(1.08);
+            -webkit-backdrop-filter: blur(18px) saturate(1.08);
+        }
+        #chat-panel.is-open {
+            display: grid;
+            animation: chat-in .14s ease-out;
+        }
+        @keyframes chat-in {
+            from { opacity: 0; transform: translateY(5px) scale(.985); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        #chat-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-width: 0;
+            padding: 0 9px 0 12px;
+            background: var(--chat-surface);
+            border-bottom: 1px solid rgba(255,255,255,.08);
+        }
+        .chat-identity { display: flex; align-items: center; min-width: 0; gap: 8px; }
+        .chat-status { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--chat-mint); box-shadow: 0 0 0 3px rgba(117,185,173,.13); }
+        .chat-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+        .chat-name strong { overflow: hidden; color: var(--chat-text); font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+        .chat-name small { margin-top: 2px; color: var(--chat-muted); font-size: 10px; }
+        #chat-close {
+            display: grid;
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            place-items: center;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--chat-muted);
+            font: 20px/1 sans-serif;
+            cursor: pointer;
+        }
+        #chat-close:hover { background: rgba(255,255,255,.08); color: var(--chat-text); }
+        #chat-log {
+            min-height: 0;
+            overflow-y: auto;
+            padding: 12px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,.2) transparent;
+        }
+        .chat-line { max-width: 88%; margin: 0 0 9px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+        .chat-line.user { margin-left: auto; border: 1px solid rgba(231,139,157,.24); border-radius: 9px 9px 3px 9px; background: rgba(231,139,157,.14); color: #fff4f6; }
+        .chat-line.assistant { margin-right: auto; border: 1px solid rgba(117,185,173,.18); border-radius: 9px 9px 9px 3px; background: rgba(117,185,173,.1); color: #eef6f4; }
+        #chat-form {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 52px;
+            align-items: end;
+            gap: 7px;
+            min-height: 57px;
+            padding: 9px;
+            border-top: 1px solid rgba(255,255,255,.09);
+            background: rgba(12,13,16,.2);
+        }
+        #chat-input {
+            display: block;
+            width: 100%;
+            min-width: 0;
+            height: 38px;
+            min-height: 38px;
+            max-height: 82px;
+            resize: none;
+            overflow-y: auto;
+            padding: 9px 10px;
+            outline: none;
+            border: 1px solid rgba(255,255,255,.16);
+            border-radius: 7px;
+            background: rgba(8,9,12,.26);
+            color: var(--chat-text);
+            font: 13px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            transition: border-color .14s, box-shadow .14s, background .14s;
+        }
+        #chat-input::placeholder { color: #8f929a; }
+        #chat-input:focus { border-color: rgba(231,139,157,.72); background: rgba(8,9,12,.38); box-shadow: 0 0 0 2px rgba(231,139,157,.12); }
+        #chat-send {
+            width: 52px;
+            height: 38px;
+            padding: 0;
+            border: 0;
+            border-radius: 7px;
+            background: var(--chat-coral);
+            color: #24171a;
+            font: 650 12px/1 sans-serif;
+            cursor: pointer;
+            transition: background .14s, transform .14s, opacity .14s;
+        }
+        #chat-send:hover { background: var(--chat-coral-hover); }
+        #chat-send:active { transform: translateY(1px); }
+        #chat-send:disabled { cursor: default; opacity: .5; }
     </style>
 </head>
 <body>
@@ -62,12 +194,18 @@
     </div>
     <!-- Live2D 渲染循环每帧读取 live_talk 值，缺失会导致渲染循环崩溃 -->
     <input type="hidden" id="live_talk" value="0">
+    <section id="chat-panel" aria-label="AnimePet 对话">
+        <div id="chat-head">
+            <div class="chat-identity"><span class="chat-status"></span><span class="chat-name"><strong>AnimePet</strong><small>在这里陪着你</small></span></div>
+            <button id="chat-close" type="button" aria-label="关闭" title="关闭">×</button>
+        </div>
+        <div id="chat-log"></div>
+        <form id="chat-form"><textarea id="chat-input" placeholder="说点什么..." maxlength="4000" rows="1"></textarea><button id="chat-send" type="submit">发送</button></form>
+    </section>
 
     <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
     <script>
         var message_Path = './';
-        var home_Path = 'https://example.com/';
-        var talkAPI = ''; // 聊天 API，空字符串表示禁用聊天功能
     </script>
     <script src="js/live2d.js"></script>
     <script src="js/message.js"></script>
@@ -78,37 +216,54 @@
         (function () {
             var landlord = document.getElementById('landlord');
             var dragging = false;
+            var moved = false;
+            var activePointer = null;
             var startX = 0, startY = 0, startLeft = 0, startBottom = 0;
 
-            landlord.addEventListener('mousedown', function (e) {
+            landlord.addEventListener('pointerdown', function (e) {
+                if (e.button !== 0) return;
                 dragging = true;
+                moved = false;
+                activePointer = e.pointerId;
                 startX = e.clientX;
                 startY = e.clientY;
                 startLeft = parseInt(landlord.style.left) || 0;
                 startBottom = parseInt(landlord.style.bottom) || 0;
+                landlord.setPointerCapture(e.pointerId);
                 document.title = 'drag_start';
                 e.preventDefault();
-            });
+            }, true);
 
-            document.addEventListener('mousemove', function (e) {
-                if (!dragging) return;
+            landlord.addEventListener('pointermove', function (e) {
+                if (!dragging || e.pointerId !== activePointer) return;
                 var dx = e.clientX - startX;
                 var dy = e.clientY - startY;
+                if (Math.hypot(dx, dy) > 12) moved = true;
+                if (!moved) return;
                 // bottom 是相对窗口底部的距离，向上拖 dy>0 则 bottom 增加
                 landlord.style.left = (startLeft + dx) + 'px';
                 landlord.style.bottom = (startBottom - dy) + 'px';
+                if (window.updateChatPanel) window.updateChatPanel();
             });
 
-            document.addEventListener('mouseup', function () {
-                if (!dragging) return;
+            function finishPointer(e) {
+                if (!dragging || e.pointerId !== activePointer) return;
                 dragging = false;
+                activePointer = null;
                 var left = parseInt(landlord.style.left) || 0;
                 var bottom = parseInt(landlord.style.bottom) || 0;
+                if (!moved && window.openChatPanel) window.openChatPanel();
                 // 持久化位置，下次启动时由 message.js 读取恢复
                 sessionStorage.setItem('historywidth', left);
                 sessionStorage.setItem('historyheight', bottom);
-                document.title = 'drag_end:' + left + ',' + bottom;
-            });
+                if (moved) {
+                    var chatOpen = document.getElementById('chat-panel').classList.contains('is-open');
+                    document.title = chatOpen ? 'chat_open' : 'drag_end:' + left + ',' + bottom;
+                }
+                moved = false;
+            }
+            landlord.addEventListener('pointerup', finishPointer, true);
+            landlord.addEventListener('pointercancel', finishPointer, true);
 
             // 启动时若 message.js 恢复了上次位置，通知 Rust 更新输入热区
             // DOMContentLoaded 时 message.js 的 $(document).ready 已执行完毕
@@ -118,6 +273,57 @@
                 if (left !== 0 || bottom !== 0) {
                     document.title = 'restore:' + left + ',' + bottom;
                 }
+            });
+        })();
+
+        // Chat UI talks to the Rust-local proxy; the API key never enters the WebView.
+        (function () {
+            var panel = document.getElementById('chat-panel');
+            var close = document.getElementById('chat-close');
+            var form = document.getElementById('chat-form');
+            var input = document.getElementById('chat-input');
+            var log = document.getElementById('chat-log');
+            function addLine(role, text) { var node=document.createElement('div'); node.className='chat-line '+role; node.textContent=text; log.appendChild(node); log.scrollTop=log.scrollHeight; return node; }
+            function positionPanel() {
+                if (!panel.classList.contains('is-open')) return;
+                var pet = document.getElementById('landlord').getBoundingClientRect();
+                var gap = 12;
+                var panelWidth = panel.offsetWidth;
+                var panelHeight = panel.offsetHeight;
+                var left = pet.right + gap;
+                if (left + panelWidth > window.innerWidth - 12) left = pet.left - panelWidth - gap;
+                left = Math.max(12, Math.min(left, window.innerWidth - panelWidth - 12));
+                var top = pet.bottom - panelHeight;
+                top = Math.max(12, Math.min(top, window.innerHeight - panelHeight - 12));
+                panel.style.left = Math.round(left) + 'px';
+                panel.style.top = Math.round(top) + 'px';
+            }
+            window.updateChatPanel = positionPanel;
+            window.openChatPanel = function(){ panel.classList.add('is-open'); positionPanel(); document.title='chat_open'; setTimeout(function(){ input.focus(); }, 50); };
+            close.addEventListener('click', function(){
+                panel.classList.remove('is-open');
+                var left = parseInt(document.getElementById('landlord').style.left) || 0;
+                var bottom = parseInt(document.getElementById('landlord').style.bottom) || 0;
+                document.title='chat_close:' + left + ',' + bottom;
+            });
+            window.addEventListener('resize', positionPanel);
+            input.addEventListener('keydown', function(e){
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+            });
+            input.addEventListener('input', function(){
+                input.style.height = '38px';
+                input.style.height = Math.min(input.scrollHeight, 82) + 'px';
+            });
+            form.addEventListener('submit', async function(e){
+                e.preventDefault(); var text=input.value.trim(); if(!text) return;
+                input.value=''; addLine('user', text); var reply=addLine('assistant','思考中...');
+                try {
+                    var response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+                    if(!response.ok || !response.body) throw new Error('HTTP '+response.status);
+                    reply.textContent=''; var reader=response.body.getReader(), decoder=new TextDecoder(); var pending='';
+                    while(true){ var part=await reader.read(); if(part.done) break; pending+=decoder.decode(part.value,{stream:true}); var lines=pending.split('\n'); pending=lines.pop();
+                        lines.forEach(function(line){ if(!line) return; try { var event=JSON.parse(line); if(event.type==='delta'){ reply.textContent+=event.text; log.scrollTop=log.scrollHeight; } else if(event.type==='done' && event.text){ reply.textContent=event.text; log.scrollTop=log.scrollHeight; } else if(event.type==='error'){ reply.textContent='出错了：'+event.text; } } catch(_){} }); }
+                } catch(err) { reply.textContent='连接失败：'+err.message; }
             });
         })();
     </script>

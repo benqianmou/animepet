@@ -12,6 +12,7 @@
 - **自由拖拽** — 拖拽到屏幕任意位置（rough 模式热区，非像素级）
 - **输入穿透** — 点击模型以外的区域穿透到下层应用
 - **对话气泡** — 模型头顶显示对话文字，半透明悬浮效果
+- **DeepSeek AI 对话** — 点击桌宠打开聊天窗口，支持流式回复、多轮上下文和本地人格/身份/记忆文件
 - **Live2D 动画** — 完整保留表情、眨眼、物理摆动等动画
 
 ## 📦 系统依赖
@@ -44,6 +45,13 @@ cargo build --release
 
 ## 🚀 运行
 
+首次使用先创建配置文件：
+
+    cp config.toml.example config.toml
+    # 编辑 config.toml，填入 DeepSeek API Key
+
+SOUL.md 是人格设定，IDENTITY.md 是用户身份档案，MEMORY.md 是长期记忆。三者会随每次请求加载；成功对话会追加一条记录到 MEMORY.md。当用户明确提供姓名、偏好、习惯等个人信息时，AI 会通过内部标记让程序追加到 IDENTITY.md。config.toml 已被 .gitignore 忽略，不会被提交。
+
 ```bash
 ./target/release/animepet
 ```
@@ -54,7 +62,7 @@ cargo build --release
 cargo run
 ```
 
-**环境要求**：需要在 Wayland 会话（推荐 niri）下运行。程序会自动设置 `WAYLAND_DISPLAY` 和 `GDK_BACKEND` 环境变量。
+**环境要求**：需要在 Wayland 会话（推荐 niri）下运行，并确保运行机器可以访问 api.deepseek.com。程序会自动设置 WAYLAND_DISPLAY 和 GDK_BACKEND 环境变量。
 
 停止：`pkill animepet`
 
@@ -66,6 +74,9 @@ animepet/
 ├── Cargo.lock              # 依赖版本锁定（保证可复现构建）
 ├── .gitignore              # 忽略 /target 构建产物
 ├── README.md
+├── SOUL.md                  # AI 人格设定
+├── IDENTITY.md              # 用户身份和偏好档案
+├── MEMORY.md                # 长期对话记忆
 ├── src/
 │   └── main.rs             # 全部 Rust 代码（约 170 行）
 └── assets/
