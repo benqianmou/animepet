@@ -2,13 +2,14 @@ use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow};
 use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::path::Path;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::{
     Arc, Mutex,
     mpsc::{self, Receiver, Sender},
 };
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
 // 资源路径：编译时嵌入项目根目录，资源自包含在 assets/live2d 下
@@ -20,6 +21,12 @@ const MODEL_HEIGHT: i32 = 250;
 const MODEL_HIT_PADDING: i32 = 14;
 const INIT_LEFT: i32 = 5; // message.js 无历史位置时默认 left:5px
 const INIT_BOTTOM: i32 = 0;
+const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_HISTORY_MESSAGES: usize = 40;
+const MAX_MEMORY_BYTES: usize = 1024 * 1024;
+const MAX_IDENTITY_BYTES: usize = 256 * 1024;
+const MAX_REQUEST_BYTES: usize = 512 * 1024;
 
 #[derive(Deserialize)]
 struct AppConfig {
@@ -28,12 +35,28 @@ struct AppConfig {
     base_url: String,
     #[serde(default = "default_model")]
     model: String,
+    #[serde(default)]
+    tts_enabled: bool,
+    #[serde(default = "default_tts_base_url")]
+    tts_base_url: String,
+    #[serde(default)]
+    tts_ref_audio: String,
+    #[serde(default)]
+    tts_prompt_text: String,
+    #[serde(default = "default_tts_prompt_lang")]
+    tts_prompt_lang: String,
 }
 fn default_base_url() -> String {
     "https://api.deepseek.com".into()
 }
 fn default_model() -> String {
     "deepseek-chat".into()
+}
+fn default_tts_base_url() -> String {
+    "http://127.0.0.1:9880".into()
+}
+fn default_tts_prompt_lang() -> String {
+    "ja".into()
 }
 
 #[derive(Clone, Serialize)]
@@ -44,6 +67,20 @@ struct ChatMessage {
 #[derive(Deserialize)]
 struct ChatRequest {
     message: String,
+}
+
+#[derive(Deserialize)]
+struct TtsRequest {
+    text: String,
+}
+
+fn http_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_TIMEOUT))
+        .timeout_connect(Some(HTTP_CONNECT_TIMEOUT))
+        .timeout_resolve(Some(HTTP_CONNECT_TIMEOUT))
+        .build();
+    config.into()
 }
 
 struct StreamReader {
@@ -112,13 +149,27 @@ fn append_identity_update(update: &str) {
     }
 
     let section = format!("\n## 对话提取 [{}]\n{}\n", chrono_like_now(), update);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = file.write_all(section.as_bytes());
+    if let Err(error) = append_bounded_file(Path::new(&path), &section, MAX_IDENTITY_BYTES) {
+        eprintln!("无法写入身份记录: {error}");
     }
+}
+
+fn append_bounded_file(path: &Path, entry: &str, max_bytes: usize) -> Result<(), String> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut combined = String::with_capacity(existing.len() + entry.len());
+    combined.push_str(&existing);
+    combined.push_str(entry);
+    if combined.len() > max_bytes {
+        let mut start = combined.len() - max_bytes;
+        while start < combined.len() && !combined.is_char_boundary(start) {
+            start += 1;
+        }
+        if let Some(newline) = combined[start..].find('\n') {
+            start += newline + 1;
+        }
+        combined = combined[start..].to_string();
+    }
+    std::fs::write(path, combined).map_err(|error| error.to_string())
 }
 
 fn emit_stream_delta(response: &str, emitted_len: &mut usize, tx: &Sender<Vec<u8>>) {
@@ -142,6 +193,24 @@ fn emit_stream_delta(response: &str, emitted_len: &mut usize, tx: &Sender<Vec<u8
 fn json_event(tx: &Sender<Vec<u8>>, kind: &str, text: &str) {
     let body = serde_json::json!({"type": kind, "text": text}).to_string() + "\n";
     let _ = tx.send(body.into_bytes());
+}
+
+fn process_stream_line(
+    line: &str,
+    answer: &mut String,
+    emitted_len: &mut usize,
+    tx: &Sender<Vec<u8>>,
+) {
+    let data = line.trim().strip_prefix("data: ").unwrap_or("");
+    if data.is_empty() || data == "[DONE]" {
+        return;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data)
+        && let Some(delta) = value["choices"][0]["delta"]["content"].as_str()
+    {
+        answer.push_str(delta);
+        emit_stream_delta(answer, emitted_len, tx);
+    }
 }
 
 fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<ChatMessage>>>) {
@@ -172,10 +241,12 @@ fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<Cha
         "{}/v1/chat/completions",
         config.base_url.trim_end_matches('/')
     );
-    let response = ureq::post(&url)
+    let agent = http_agent();
+    let response = agent
+        .post(&url)
         .header("Authorization", &format!("Bearer {}", config.api_key))
         .send_json(
-            &serde_json::json!({"model": config.model, "messages": messages, "stream": true}),
+            serde_json::json!({"model": config.model, "messages": messages, "stream": true}),
         );
     let mut response = match response {
         Ok(r) => r,
@@ -185,7 +256,7 @@ fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<Cha
         }
     };
     let mut response_reader = response.body_mut().as_reader();
-    let mut buf = String::new();
+    let mut buf = Vec::new();
     let mut answer = String::new();
     let mut emitted_len = 0;
     let mut bytes = [0u8; 4096];
@@ -198,23 +269,28 @@ fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<Cha
                 return;
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&bytes[..n]));
-        while let Some(pos) = buf.find("\n") {
-            let line = buf.drain(..=pos).collect::<String>();
-            let data = line.trim().strip_prefix("data: ").unwrap_or("");
-            if data.is_empty() {
-                continue;
-            }
-            if data == "[DONE]" {
-                continue;
-            }
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                if let Some(delta) = value["choices"][0]["delta"]["content"].as_str() {
-                    answer.push_str(delta);
-                    emit_stream_delta(&answer, &mut emitted_len, &tx);
+        buf.extend_from_slice(&bytes[..n]);
+        while let Some(pos) = buf.iter().position(|byte| *byte == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            let line = match String::from_utf8(line_bytes) {
+                Ok(line) => line,
+                Err(error) => {
+                    json_event(&tx, "error", &format!("DeepSeek 返回了无效 UTF-8: {error}"));
+                    return;
                 }
-            }
+            };
+            process_stream_line(&line, &mut answer, &mut emitted_len, &tx);
         }
+    }
+    if !buf.is_empty() {
+        let line = match String::from_utf8(buf) {
+            Ok(line) => line,
+            Err(error) => {
+                json_event(&tx, "error", &format!("DeepSeek 返回了无效 UTF-8: {error}"));
+                return;
+            }
+        };
+        process_stream_line(&line, &mut answer, &mut emitted_len, &tx);
     }
     if !answer.is_empty() {
         let (clean_answer, identity_update) = extract_identity_update(&answer);
@@ -230,6 +306,10 @@ fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<Cha
             role: "assistant".into(),
             content: clean_answer.clone(),
         });
+        if guard.len() > MAX_HISTORY_MESSAGES {
+            let excess = guard.len() - MAX_HISTORY_MESSAGES;
+            guard.drain(..excess);
+        }
         let stamp = format!(
             "\n- [{}] 用户：{}\n  AnimePet：{}\n",
             chrono_like_now(),
@@ -237,8 +317,8 @@ fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<Cha
             clean_answer
         );
         let memory_path = format!("{}/MEMORY.md", env!("CARGO_MANIFEST_DIR"));
-        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(memory_path) {
-            let _ = file.write_all(stamp.as_bytes());
+        if let Err(error) = append_bounded_file(Path::new(&memory_path), &stamp, MAX_MEMORY_BYTES) {
+            eprintln!("无法写入对话记忆: {error}");
         }
         json_event(&tx, "done", &clean_answer);
     } else {
@@ -246,29 +326,121 @@ fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<Cha
     }
 }
 
-fn chrono_like_now() -> String {
-    format!("{:?}", SystemTime::now())
+fn contains_japanese(text: &str) -> bool {
+    text.chars()
+        .any(|c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}'))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{IDENTITY_CLOSE, IDENTITY_OPEN, extract_identity_update};
+fn normalize_language(language: &str) -> Result<&'static str, String> {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "ja" | "jp" | "日语" | "日文" => Ok("ja"),
+        "zh" | "中文" | "汉语" | "漢語" => Ok("zh"),
+        "en" | "english" | "英语" | "英文" => Ok("en"),
+        _ => Err(format!(
+            "不支持的 TTS 参考语言: {language}（请使用 ja、zh 或 en）"
+        )),
+    }
+}
 
-    #[test]
-    fn extracts_identity_block_and_keeps_visible_reply() {
-        let response = format!("你好。\n{}\n- 喜欢咖啡\n{}", IDENTITY_OPEN, IDENTITY_CLOSE);
-        let (clean, update) = extract_identity_update(&response);
-        assert_eq!(clean, "你好。");
-        assert_eq!(update.as_deref(), Some("- 喜欢咖啡"));
+fn resolve_tts_reference_path(reference: &str) -> String {
+    let reference = Path::new(reference.trim());
+    if reference.is_absolute() {
+        return reference.to_string_lossy().into_owned();
     }
 
-    #[test]
-    fn leaves_incomplete_identity_block_untouched() {
-        let response = format!("你好 {}未完成", IDENTITY_OPEN);
-        let (clean, update) = extract_identity_update(&response);
-        assert_eq!(clean, response);
-        assert!(update.is_none());
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(reference)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn synthesize_speech(req: TtsRequest) -> Result<(Vec<u8>, &'static str), String> {
+    let config = load_config()?;
+    synthesize_speech_with_config(req, config)
+}
+
+fn synthesize_speech_with_config(
+    req: TtsRequest,
+    config: AppConfig,
+) -> Result<(Vec<u8>, &'static str), String> {
+    let text = req.text.trim();
+    if text.is_empty() {
+        return Err("TTS 文本为空".into());
     }
+    if text.chars().count() > 40_000 {
+        return Err("TTS 文本过长（最多 40000 个字符）".into());
+    }
+    let text_lang = if contains_japanese(text) { "ja" } else { "zh" };
+    if !config.tts_enabled {
+        return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+    }
+    if config.tts_ref_audio.trim().is_empty() || config.tts_prompt_text.trim().is_empty() {
+        return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+    }
+    let prompt_lang = normalize_language(&config.tts_prompt_lang)?;
+    let ref_audio_path = resolve_tts_reference_path(&config.tts_ref_audio);
+    let url = format!("{}/tts", config.tts_base_url.trim_end_matches('/'));
+    let payload = serde_json::json!({
+        "text": text,
+        "text_lang": text_lang,
+        "ref_audio_path": ref_audio_path,
+        "prompt_text": config.tts_prompt_text,
+        "prompt_lang": prompt_lang,
+        "text_split_method": "cut5",
+        "batch_size": 1,
+        "speed_factor": 1.0,
+        "media_type": "wav",
+        "streaming_mode": false,
+    });
+    let agent = http_agent();
+    let mut response = match agent
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .send_json(&payload)
+    {
+        Ok(response) => response,
+        Err(_) => {
+            return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+        }
+    };
+    let audio = match response
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024 * 1024)
+        .read_to_vec()
+    {
+        Ok(audio) => audio,
+        Err(_) => {
+            return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+        }
+    };
+    if audio.is_empty() {
+        return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+    }
+    Ok((audio, text_lang))
+}
+
+fn synthesize_speech_fallback(text: &str, text_lang: &str) -> Result<Vec<u8>, String> {
+    let voice = if text_lang == "ja" { "ja" } else { "zh" };
+    let limited_text: String = text.chars().take(2_000).collect();
+    let output = Command::new("espeak-ng")
+        .arg("--stdout")
+        .arg("-v")
+        .arg(voice)
+        .arg("-s")
+        .arg("150")
+        .arg(limited_text)
+        .output()
+        .map_err(|e| format!("GPT-SoVITS 不可用，且无法启动 espeak-ng 兜底: {e}"))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("GPT-SoVITS 不可用，espeak-ng 兜底失败: {stderr}"));
+    }
+    Ok(output.stdout)
+}
+
+fn chrono_like_now() -> String {
+    format!("{:?}", SystemTime::now())
 }
 
 fn start_chat_server(root: &str, history: Arc<Mutex<Vec<ChatMessage>>>) -> u16 {
@@ -277,11 +449,54 @@ fn start_chat_server(root: &str, history: Arc<Mutex<Vec<ChatMessage>>>) -> u16 {
     let root = root.to_string();
     std::thread::spawn(move || {
         for mut request in server.incoming_requests() {
-            if request.url().split('?').next().unwrap_or("") == "/chat"
-                && request.method() == &tiny_http::Method::Post
-            {
-                let mut body = String::new();
-                let _ = request.as_reader().read_to_string(&mut body);
+            let route = request.url().split('?').next().unwrap_or("");
+            if route == "/tts" && request.method() == &tiny_http::Method::Post {
+                let body = match read_request_body(&mut request) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let _ = request
+                            .respond(tiny_http::Response::from_string(error).with_status_code(413));
+                        continue;
+                    }
+                };
+                std::thread::spawn(move || {
+                    match serde_json::from_str::<TtsRequest>(&body)
+                        .map_err(|e| e.to_string())
+                        .and_then(synthesize_speech)
+                    {
+                        Ok((audio, lang)) => {
+                            let header = tiny_http::Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"audio/wav"[..],
+                            )
+                            .unwrap();
+                            let voice_header = tiny_http::Header::from_bytes(
+                                &b"X-AnimePet-TTS"[..],
+                                lang.as_bytes(),
+                            )
+                            .unwrap();
+                            let _ = request.respond(
+                                tiny_http::Response::from_data(audio)
+                                    .with_header(header)
+                                    .with_header(voice_header),
+                            );
+                        }
+                        Err(error) => {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string(error).with_status_code(503),
+                            );
+                        }
+                    }
+                });
+            } else if route == "/chat" && request.method() == &tiny_http::Method::Post {
+                let body = match read_request_body(&mut request) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let _ = request
+                            .respond(tiny_http::Response::from_string(error).with_status_code(413));
+                        continue;
+                    }
+                };
                 let parsed = serde_json::from_str::<ChatRequest>(&body);
                 if let Ok(chat) = parsed {
                     let (tx, rx) = mpsc::channel();
@@ -325,20 +540,93 @@ fn content_type_for(path: &Path) -> &'static str {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
+        Some("wav") => "audio/wav",
+        Some("ogg") => "audio/ogg",
         Some("mp3") => "audio/mpeg",
         _ => "application/octet-stream",
     }
 }
 
-fn serve_file(request: tiny_http::Request, root: &str) {
-    let url_path = request.url().split('?').next().unwrap_or("/");
-    let relative = url_path.trim_start_matches('/');
+fn percent_decode_path(path: &str) -> Option<String> {
+    fn hex_digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let high = hex_digit(bytes[index + 1])?;
+            let low = hex_digit(bytes[index + 2])?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn safe_static_path(root: &str, url: &str) -> Option<PathBuf> {
+    let raw_path = url.split('?').next().unwrap_or("/");
+    let decoded_path = percent_decode_path(raw_path)?;
+    if decoded_path.contains('\\') {
+        return None;
+    }
+    let relative = decoded_path.trim_start_matches('/');
     let relative = if relative.is_empty() {
         "index.html"
     } else {
         relative
     };
-    let full_path = Path::new(root).join(relative);
+    for component in Path::new(relative).components() {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            return None;
+        }
+    }
+    let root = Path::new(root).canonicalize().ok()?;
+    let candidate = root.join(relative).canonicalize().ok()?;
+    candidate.starts_with(&root).then_some(candidate)
+}
+
+fn read_request_body(request: &mut tiny_http::Request) -> Result<String, String> {
+    let mut body = String::new();
+    request
+        .as_reader()
+        .take((MAX_REQUEST_BYTES + 1) as u64)
+        .read_to_string(&mut body)
+        .map_err(|error| error.to_string())?;
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(format!("请求体过大（最多 {} 字节）", MAX_REQUEST_BYTES));
+    }
+    Ok(body)
+}
+
+fn serve_file(request: tiny_http::Request, root: &str) {
+    if request.method() != &tiny_http::Method::Get {
+        let _ = request.respond(
+            tiny_http::Response::from_string("405 Method Not Allowed").with_status_code(405),
+        );
+        return;
+    }
+    let Some(full_path) = safe_static_path(root, request.url()) else {
+        let _ = request
+            .respond(tiny_http::Response::from_string("404 Not Found").with_status_code(404));
+        return;
+    };
     match std::fs::read(&full_path) {
         Ok(data) => {
             let header = tiny_http::Header::from_bytes(
@@ -410,11 +698,11 @@ fn build_ui(app: &Application) {
     window.set_app_paintable(true);
 
     // 设置 RGBA visual 以支持透明背景（只显示模型，不显示窗口背景）
-    if let Some(screen) = gtk::gdk::Screen::default() {
-        if let Some(visual) = screen.rgba_visual() {
-            window.set_visual(Some(&visual));
-            println!("RGBA visual set for transparency");
-        }
+    if let Some(screen) = gtk::gdk::Screen::default()
+        && let Some(visual) = screen.rgba_visual()
+    {
+        window.set_visual(Some(&visual));
+        println!("RGBA visual set for transparency");
     }
 
     // layer-shell：全屏 Overlay 层，跨所有工作区 + 始终置顶
@@ -442,6 +730,7 @@ fn build_ui(app: &Application) {
         settings.set_enable_write_console_messages_to_stdout(true);
         settings.set_allow_file_access_from_file_urls(true);
         settings.set_allow_universal_access_from_file_urls(true);
+        settings.set_media_playback_requires_user_gesture(false);
         println!("WebView settings configured");
     }
 
@@ -509,4 +798,121 @@ fn build_ui(app: &Application) {
     gtk::glib::idle_add_local_once(move || {
         setup_input_region(&window_ref);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AppConfig, IDENTITY_CLOSE, IDENTITY_OPEN, TtsRequest, contains_japanese,
+        extract_identity_update, normalize_language, percent_decode_path,
+        resolve_tts_reference_path, safe_static_path,
+    };
+
+    #[test]
+    fn extracts_identity_block_and_keeps_visible_reply() {
+        let response = format!("你好。\n{}\n- 喜欢咖啡\n{}", IDENTITY_OPEN, IDENTITY_CLOSE);
+        let (clean, update) = extract_identity_update(&response);
+        assert_eq!(clean, "你好。");
+        assert_eq!(update.as_deref(), Some("- 喜欢咖啡"));
+    }
+
+    #[test]
+    fn leaves_incomplete_identity_block_untouched() {
+        let response = format!("你好 {}未完成", IDENTITY_OPEN);
+        let (clean, update) = extract_identity_update(&response);
+        assert_eq!(clean, response);
+        assert!(update.is_none());
+    }
+
+    #[test]
+    fn detects_kana_as_japanese() {
+        assert!(contains_japanese("今日はどうしたの？"));
+        assert!(!contains_japanese("今天怎么了？"));
+    }
+
+    #[test]
+    fn normalizes_prompt_language_aliases() {
+        assert_eq!(normalize_language("日语").unwrap(), "ja");
+        assert_eq!(normalize_language("zh").unwrap(), "zh");
+        assert_eq!(normalize_language("English").unwrap(), "en");
+        assert!(normalize_language("fr").is_err());
+    }
+
+    #[test]
+    fn resolves_project_relative_tts_reference_path() {
+        let relative = resolve_tts_reference_path("voice/katou-reference.wav");
+        assert!(relative.ends_with("/voice/katou-reference.wav"));
+        assert_eq!(
+            resolve_tts_reference_path("/tmp/katou-reference.wav"),
+            "/tmp/katou-reference.wav"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_traversing_static_paths() {
+        assert_eq!(
+            percent_decode_path("/model/katou.json"),
+            Some("/model/katou.json".into())
+        );
+        assert_eq!(
+            percent_decode_path("/%2e%2e/config.toml"),
+            Some("/../config.toml".into())
+        );
+        assert!(safe_static_path(super::LIVE2D_PATH, "/../config.toml").is_none());
+        assert!(safe_static_path(super::LIVE2D_PATH, "/%2e%2e/config.toml").is_none());
+        assert!(safe_static_path(super::LIVE2D_PATH, "/index.html").is_some());
+    }
+
+    #[test]
+    fn fallback_tts_generates_wav_audio() {
+        let audio = super::synthesize_speech_fallback("你好", "zh").unwrap();
+        assert!(audio.starts_with(b"RIFF"));
+        assert!(audio.len() > 1024);
+    }
+
+    #[test]
+    fn disabled_tts_uses_fallback_wav_audio() {
+        let config = AppConfig {
+            api_key: "unused".into(),
+            base_url: "https://example.invalid".into(),
+            model: "unused".into(),
+            tts_enabled: false,
+            tts_base_url: "http://127.0.0.1:9".into(),
+            tts_ref_audio: String::new(),
+            tts_prompt_text: String::new(),
+            tts_prompt_lang: "ja".into(),
+        };
+        let (audio, source) = super::synthesize_speech_with_config(
+            TtsRequest {
+                text: "你好".into(),
+            },
+            config,
+        )
+        .unwrap();
+        assert_eq!(source, "fallback");
+        assert!(audio.starts_with(b"RIFF"));
+    }
+
+    #[test]
+    fn unavailable_gptsovits_uses_fallback_wav_audio() {
+        let config = AppConfig {
+            api_key: "unused".into(),
+            base_url: "https://example.invalid".into(),
+            model: "unused".into(),
+            tts_enabled: true,
+            tts_base_url: "http://127.0.0.1:9".into(),
+            tts_ref_audio: "/tmp/missing-reference.wav".into(),
+            tts_prompt_text: "こんにちは".into(),
+            tts_prompt_lang: "ja".into(),
+        };
+        let (audio, source) = super::synthesize_speech_with_config(
+            TtsRequest {
+                text: "今日は".into(),
+            },
+            config,
+        )
+        .unwrap();
+        assert_eq!(source, "fallback");
+        assert!(audio.starts_with(b"RIFF"));
+    }
 }

@@ -17,6 +17,12 @@
 		{"name":"head", "id":"D_REF.PT_HEAD"},
 		{"name":"body", "id":"D_REF.PT_BODY"}
 	],
+	"hit_areas_custom":{
+		"head_x":[99999,99999],
+		"head_y":[-99999,-99999],
+		"body_x":[99999,99999],
+		"body_y":[-99999,-99999]
+	},
 	"motions":{
 		"":[
 			{"file":"mtn/I_ANGRY.mtn"},

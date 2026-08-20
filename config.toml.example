@@ -2,3 +2,12 @@
 api_key = "sk-your-key-here"
 base_url = "https://api.deepseek.com"
 model = "deepseek-chat"
+
+# Optional GPT-SoVITS speech output. Start the official api_v2.py service before enabling this.
+tts_enabled = false
+tts_base_url = "http://127.0.0.1:9880"
+# A relative path resolves from the AnimePet project when GPT-SoVITS runs locally.
+# For a remote GPT-SoVITS server, use an absolute path visible to that server instead.
+tts_ref_audio = "voice/katou-reference.wav"
+tts_prompt_text = "Pilots, your mission is to establish and hold air superiority over the target sector."
+tts_prompt_lang = "en"

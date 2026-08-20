@@ -1,2 +1,5 @@
 /target
 /config.toml
+# User-provided voice references stay local unless their redistribution rights are explicit.
+/voice/*
+!/voice/README.md

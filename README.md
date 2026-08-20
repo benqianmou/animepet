@@ -20,16 +20,16 @@
 本程序依赖以下系统库（Arch Linux）：
 
 ```bash
-sudo pacman -S gtk3 webkit2gtk-4.1 gtk-layer-shell
+sudo pacman -S gtk3 webkit2gtk-4.1 gtk-layer-shell espeak-ng
 ```
 
 其他发行版对应包名：
 
 | 发行版 | 依赖包 |
 |--------|--------|
-| Arch | `gtk3 webkit2gtk-4.1 gtk-layer-shell` |
-| Debian/Ubuntu | `libgtk-3-dev libwebkit2gtk-4.1-dev libgtk-layer-shell-dev` |
-| Fedora | `gtk3-devel webkit2gtk4.1-devel gtk-layer-shell-devel` |
+| Arch | `gtk3 webkit2gtk-4.1 gtk-layer-shell espeak-ng` |
+| Debian/Ubuntu | `libgtk-3-dev libwebkit2gtk-4.1-dev libgtk-layer-shell-dev espeak-ng` |
+| Fedora | `gtk3-devel webkit2gtk4.1-devel gtk-layer-shell-devel espeak-ng` |
 
 ## 🔨 构建
 
@@ -62,6 +62,20 @@ SOUL.md 是人格设定，IDENTITY.md 是用户身份档案，MEMORY.md 是长�
 cargo run
 ```
 
+### 加藤惠语音输出（GPT-SoVITS）
+
+AnimePet 可以将每次 AI 回复自动交给本地或局域网内的 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) `api_v2.py` 服务合成，并在播放时触发 Live2D 的说话动作。聊天窗口右上角的扬声器按钮可切换静音，状态会保存在本地。
+
+发布到 GitHub 时，仓库只包含导入流程，不包含任何未经确认可公开再分发的声源。`voice/` 内的实际音频默认被 Git 忽略，避免误提交第三方素材。
+
+1. 准备一段你有权使用的干净参考音频，并知道它的准确台词。运行 `bash scripts/import-katovoice.sh /path/to/katou-reference.wav`，会在项目中生成 `voice/katou-reference.wav`。脚本也支持 MP3、FLAC、OGG 等 FFmpeg 可读取格式。`katovoice` 中的 FMOD `.bank` 文件需先用 vgmstream 解码为音频文件，不能直接作为 GPT-SoVITS 参考。
+2. 在本机 GPU 上启动官方 GPT-SoVITS API。若 GPT-SoVITS 位于项目同级目录，可直接运行 `bash scripts/start-gpt-sovits.sh`；脚本会使用其独立 Python 环境，并检查 `torchcodec`。也可以在 GPT-SoVITS 目录运行 `python api_v2.py -a 127.0.0.1 -p 9880`。
+3. 在 `config.toml` 中启用 `tts_enabled`，将 `tts_ref_audio` 设为 `voice/katou-reference.wav`，再填写该参考音频的准确 `tts_prompt_text` 和语言。若服务位于另一台机器，`tts_ref_audio` 必须改为那台机器可访问的绝对路径。参考音频是英文时使用 `tts_prompt_lang = "en"`，中文使用 `zh`，日语使用 `ja`。
+
+需要发布可下载的语音资源时，只能将具有明确再分发授权的音频放到 GitHub Release 或其他受限下载位置；不要将来源不明的游戏 `.bank` 文件提交进源码仓库。
+
+回复为中文时，AnimePet 请求 GPT-SoVITS 使用 `zh`；回复含日语假名时使用 `ja`。未启动或未配置 TTS 服务时，AnimePet 会用本机 `espeak-ng` 生成系统语音兜底，保证角色能先发出声音；这不是加藤惠音色，只用于在 GPT-SoVITS 配好前避免沉默。
+
 **环境要求**：需要在 Wayland 会话（推荐 niri）下运行，并确保运行机器可以访问 api.deepseek.com。程序会自动设置 WAYLAND_DISPLAY 和 GDK_BACKEND 环境变量。
 
 停止：`pkill animepet`
@@ -77,6 +91,11 @@ animepet/
 ├── SOUL.md                  # AI 人格设定
 ├── IDENTITY.md              # 用户身份和偏好档案
 ├── MEMORY.md                # 长期对话记忆
+├── voice/
+│   └── README.md             # 本地参考音频说明（实际音频默认不提交）
+├── scripts/
+│   ├── import-katovoice.sh   # 导入并规范化本地参考音频
+│   └── start-gpt-sovits.sh   # 启动同级 GPT-SoVITS API
 ├── src/
 │   └── main.rs             # 全部 Rust 代码（约 170 行）
 └── assets/

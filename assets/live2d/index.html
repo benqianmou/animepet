@@ -116,6 +116,23 @@
         .chat-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
         .chat-name strong { overflow: hidden; color: var(--chat-text); font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
         .chat-name small { margin-top: 2px; color: var(--chat-muted); font-size: 10px; }
+        .chat-name small.is-action { color: var(--chat-coral); cursor: pointer; }
+        .chat-actions { display: flex; align-items: center; gap: 2px; }
+        #chat-mute {
+            display: grid;
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            place-items: center;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--chat-muted);
+            font: 15px/1 sans-serif;
+            cursor: pointer;
+        }
+        #chat-mute:hover { background: rgba(255,255,255,.08); color: var(--chat-text); }
+        #chat-mute.is-muted { color: var(--chat-coral); }
         #chat-close {
             display: grid;
             width: 28px;
@@ -197,17 +214,21 @@
     <section id="chat-panel" aria-label="AnimePet 对话">
         <div id="chat-head">
             <div class="chat-identity"><span class="chat-status"></span><span class="chat-name"><strong>AnimePet</strong><small>在这里陪着你</small></span></div>
-            <button id="chat-close" type="button" aria-label="关闭" title="关闭">×</button>
+            <div class="chat-actions">
+                <button id="chat-mute" type="button" aria-label="静音" title="静音">&#128266;</button>
+                <button id="chat-close" type="button" aria-label="关闭" title="关闭">×</button>
+            </div>
         </div>
         <div id="chat-log"></div>
         <form id="chat-form"><textarea id="chat-input" placeholder="说点什么..." maxlength="4000" rows="1"></textarea><button id="chat-send" type="submit">发送</button></form>
     </section>
 
-    <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
     <script>
         var message_Path = './';
     </script>
     <script src="js/live2d.js"></script>
+    <script src="js/lipsync.js"></script>
     <script src="js/message.js"></script>
     <script>
         // 模型加载由 message.js 在纹理预加载后统一执行，这里不再重复调用 loadlive2d
@@ -283,7 +304,143 @@
             var form = document.getElementById('chat-form');
             var input = document.getElementById('chat-input');
             var log = document.getElementById('chat-log');
+            var mute = document.getElementById('chat-mute');
+            var voiceStatus = document.querySelector('.chat-name small');
+            var audio = null;
+            var speechRequest = null;
+            var speechSequence = 0;
+            var audioContext = null;
+            var lipSyncFrame = null;
+            var muted = localStorage.getItem('animepet-muted') === '1';
+            var chatBusy = false;
+
             function addLine(role, text) { var node=document.createElement('div'); node.className='chat-line '+role; node.textContent=text; log.appendChild(node); log.scrollTop=log.scrollHeight; return node; }
+            function setVoiceStatus(text, actionable) {
+                voiceStatus.textContent = text;
+                voiceStatus.classList.toggle('is-action', !!actionable);
+                window.clearTimeout(setVoiceStatus.timer);
+                if (text !== '在这里陪着你' && !actionable) setVoiceStatus.timer = window.setTimeout(function(){ setVoiceStatus('在这里陪着你'); }, 4500);
+            }
+            function updateMuteButton() {
+                mute.classList.toggle('is-muted', muted);
+                mute.innerHTML = muted ? '&#128263;' : '&#128266;';
+                mute.setAttribute('aria-label', muted ? '取消静音' : '静音');
+                mute.title = muted ? '取消静音' : '静音';
+                if (audio) audio.muted = muted;
+            }
+            function stopSpeech() {
+                speechSequence++;
+                if (speechRequest) { speechRequest.abort(); speechRequest = null; }
+                if (audio) {
+                    var oldSrc = audio.src;
+                    audio.pause();
+                    audio.removeAttribute('src');
+                    audio.load();
+                    if (oldSrc) URL.revokeObjectURL(oldSrc);
+                    audio = null;
+                }
+                if (lipSyncFrame) { cancelAnimationFrame(lipSyncFrame); lipSyncFrame = null; }
+                if (window.setLive2dLipSyncValue) window.setLive2dLipSyncValue(0);
+                setVoiceStatus('在这里陪着你');
+                document.getElementById('live_talk').value = '0';
+            }
+            function primeAudio() {
+                var AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContext) return;
+                if (!audioContext) audioContext = new AudioContext();
+                if (audioContext.state === 'suspended') audioContext.resume();
+            }
+            function connectLipSync(media) {
+                var AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContext) return;
+                primeAudio();
+                var source = audioContext.createMediaElementSource(media);
+                var analyser = audioContext.createAnalyser();
+                var samples = new Uint8Array(analyser.fftSize = 256);
+                analyser.smoothingTimeConstant = 0.68;
+                source.connect(analyser);
+                analyser.connect(audioContext.destination);
+                function updateMouth() {
+                    analyser.getByteTimeDomainData(samples);
+                    var energy = 0;
+                    for (var i = 0; i < samples.length; i++) {
+                        var normalized = (samples[i] - 128) / 128;
+                        energy += normalized * normalized;
+                    }
+                    var rms = Math.sqrt(energy / samples.length);
+                    if (window.setLive2dLipSyncValue) window.setLive2dLipSyncValue(muted ? 0 : Math.min(1, rms * 5.5));
+                    lipSyncFrame = requestAnimationFrame(updateMouth);
+                }
+                updateMouth();
+            }
+            async function playAudio() {
+                if (!audio || muted) return;
+                try {
+                    primeAudio();
+                    await audio.play();
+                } catch (error) {
+                    setVoiceStatus('点这里播放语音', true);
+                }
+            }
+            async function speak(text) {
+                if (muted) { setVoiceStatus('已静音'); return; }
+                if (!text) return;
+                stopSpeech();
+                var sequence = ++speechSequence;
+                speechRequest = new AbortController();
+                setVoiceStatus('正在合成语音...');
+                try {
+                    var response = await fetch('/tts', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: text}),
+                        signal: speechRequest.signal
+                    });
+                    if (!response.ok) throw new Error(await response.text());
+                    var voiceType = response.headers.get('X-AnimePet-TTS');
+                    var blob = await response.blob();
+                    if (sequence !== speechSequence || muted) return;
+                    var currentAudio = new Audio(URL.createObjectURL(blob));
+                    audio = currentAudio;
+                    currentAudio.muted = muted;
+                    currentAudio.preload = 'auto';
+                    connectLipSync(currentAudio);
+                    currentAudio.addEventListener('play', function(){ document.getElementById('live_talk').value='1'; setVoiceStatus(voiceType === 'fallback' ? '正在说话（系统语音）' : '正在说话'); });
+                    currentAudio.addEventListener('ended', function(){
+                        URL.revokeObjectURL(currentAudio.src);
+                        if (audio === currentAudio) {
+                            if (lipSyncFrame) { cancelAnimationFrame(lipSyncFrame); lipSyncFrame=null; }
+                            if (window.setLive2dLipSyncValue) window.setLive2dLipSyncValue(0);
+                            document.getElementById('live_talk').value='0';
+                            setVoiceStatus('在这里陪着你');
+                            audio=null;
+                        }
+                    });
+                    currentAudio.addEventListener('error', function(){
+                        if (currentAudio.src) URL.revokeObjectURL(currentAudio.src);
+                        if (audio === currentAudio) {
+                            document.getElementById('live_talk').value='0';
+                            audio=null;
+                            setVoiceStatus('语音播放失败');
+                        }
+                    });
+                    await playAudio();
+                } catch (error) {
+                    if (error.name !== 'AbortError') setVoiceStatus('语音未播放：' + error.message);
+                } finally {
+                    if (sequence === speechSequence) speechRequest = null;
+                }
+            }
+            voiceStatus.addEventListener('click', function(){
+                if (voiceStatus.classList.contains('is-action')) playAudio();
+            });
+            mute.addEventListener('click', function(){
+                muted = !muted;
+                localStorage.setItem('animepet-muted', muted ? '1' : '0');
+                if (muted) stopSpeech();
+                updateMuteButton();
+            });
+            updateMuteButton();
             function positionPanel() {
                 if (!panel.classList.contains('is-open')) return;
                 var pet = document.getElementById('landlord').getBoundingClientRect();
@@ -315,15 +472,23 @@
                 input.style.height = Math.min(input.scrollHeight, 82) + 'px';
             });
             form.addEventListener('submit', async function(e){
-                e.preventDefault(); var text=input.value.trim(); if(!text) return;
+                e.preventDefault(); var text=input.value.trim(); if(!text || chatBusy) return;
+                chatBusy = true;
+                document.getElementById('chat-send').disabled = true;
+                primeAudio();
+                stopSpeech();
                 input.value=''; addLine('user', text); var reply=addLine('assistant','思考中...');
                 try {
                     var response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
                     if(!response.ok || !response.body) throw new Error('HTTP '+response.status);
                     reply.textContent=''; var reader=response.body.getReader(), decoder=new TextDecoder(); var pending='';
                     while(true){ var part=await reader.read(); if(part.done) break; pending+=decoder.decode(part.value,{stream:true}); var lines=pending.split('\n'); pending=lines.pop();
-                        lines.forEach(function(line){ if(!line) return; try { var event=JSON.parse(line); if(event.type==='delta'){ reply.textContent+=event.text; log.scrollTop=log.scrollHeight; } else if(event.type==='done' && event.text){ reply.textContent=event.text; log.scrollTop=log.scrollHeight; } else if(event.type==='error'){ reply.textContent='出错了：'+event.text; } } catch(_){} }); }
+                        lines.forEach(function(line){ if(!line) return; try { var event=JSON.parse(line); if(event.type==='delta'){ reply.textContent+=event.text; log.scrollTop=log.scrollHeight; } else if(event.type==='done' && event.text){ reply.textContent=event.text; log.scrollTop=log.scrollHeight; speak(event.text); } else if(event.type==='error'){ reply.textContent='出错了：'+event.text; } } catch(_){} }); }
                 } catch(err) { reply.textContent='连接失败：'+err.message; }
+                finally {
+                    chatBusy = false;
+                    document.getElementById('chat-send').disabled = false;
+                }
             });
         })();
     </script>
