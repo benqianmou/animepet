@@ -12,8 +12,8 @@ use std::sync::{
 use std::time::{Duration, SystemTime};
 use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
-// 资源路径：编译时嵌入项目根目录，资源自包含在 assets/katoumegumi 下
-const LIVE2D_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/katoumegumi");
+// 静态资源根目录；katoumegumi 与 rem 是并列的模型资源目录。
+const ASSETS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 
 // 模型尺寸与初始位置（需与 assets/katoumegumi/index.html 中 #landlord 的 CSS 保持一致）
 const MODEL_WIDTH: i32 = 280;
@@ -803,8 +803,8 @@ fn build_ui(app: &Application) {
     }
 
     let history: Arc<Mutex<Vec<ChatMessage>>> = Arc::new(Mutex::new(Vec::new()));
-    let port = start_chat_server(LIVE2D_PATH, history);
-    let html_path = format!("http://127.0.0.1:{}/index.html", port);
+    let port = start_chat_server(ASSETS_PATH, history);
+    let html_path = format!("http://127.0.0.1:{}/katoumegumi/index.html", port);
     println!("Loading HTML from: {}", html_path);
     webview.load_uri(&html_path);
 
@@ -940,9 +940,10 @@ mod tests {
             percent_decode_path("/%2e%2e/config.toml"),
             Some("/../config.toml".into())
         );
-        assert!(safe_static_path(super::LIVE2D_PATH, "/../config.toml").is_none());
-        assert!(safe_static_path(super::LIVE2D_PATH, "/%2e%2e/config.toml").is_none());
-        assert!(safe_static_path(super::LIVE2D_PATH, "/index.html").is_some());
+        assert!(safe_static_path(super::ASSETS_PATH, "/../config.toml").is_none());
+        assert!(safe_static_path(super::ASSETS_PATH, "/%2e%2e/config.toml").is_none());
+        assert!(safe_static_path(super::ASSETS_PATH, "/katoumegumi/index.html").is_some());
+        assert!(safe_static_path(super::ASSETS_PATH, "/rem/rem.json").is_some());
     }
 
     #[test]

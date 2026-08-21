@@ -104,15 +104,18 @@ animepet/
 ├── src/
 │   └── main.rs             # 全部 Rust 代码（约 170 行）
 └── assets/
-    └── katoumegumi/        # Live2D 资源（自包含，运行时加载）
-        ├── index.html      # HTML 包装层（气泡样式 + 拖拽通信）
-        ├── js/
-        │   ├── live2d.js   # Live2D 引擎
-        │   └── message.js  # 交互逻辑
-        ├── message.json    # 消息文案配置
-        └── model/
-            ├── katou_01/   # 加藤惠模型
-            └── rem/        # 蕾姆模型（仅供学习交流，禁止商用）
+    ├── katoumegumi/        # 加藤惠 Live2D 资源与桌宠页面
+    │   ├── index.html      # HTML 包装层（气泡样式 + 拖拽通信）
+    │   ├── js/
+    │   │   ├── live2d.js   # Live2D 引擎
+    │   │   └── message.js  # 交互逻辑
+    │   ├── message.json    # 消息文案配置
+    │   └── model/katou_01/ # 加藤惠模型
+    └── rem/                # 蕾姆完整模型（与 katoumegumi 并列）
+        ├── rem.json
+        ├── remu.moc
+        ├── remu2048/
+        └── motions/
 ```
 
 ## 🏗️ 架构说明
@@ -123,6 +126,7 @@ animepet/
 - **拖拽**：JS 侧 `addEventListener` 实现，通过 `document.title` 与 Rust 通信
 - **输入穿透**：`input_shape_combine_region` 矩形热区，拖拽时临时扩大到全屏
 - **本地服务器**：绕开 `file://` 协议的 CORS 限制（Live2D 需用 XHR 加载模型 JSON）
+- **模型资源根目录**：Rust 从 `assets/` 提供静态文件，页面位于 `assets/katoumegumi/`，蕾姆模型通过兄弟路径 `../rem/rem.json` 加载
 
 ## 🎨 自定义
 
@@ -136,4 +140,4 @@ animepet/
 项目代码使用 MIT 许可证。蕾姆模型来自
 [`eeg1412/Live2dRem`](https://github.com/eeg1412/Live2dRem)，上游项目使用 GPL v2，
 且其 README 声明模型仅供学习交流、禁止商用；详见
-`assets/katoumegumi/model/rem/NOTICE.md`。
+`assets/rem/NOTICE.md`。

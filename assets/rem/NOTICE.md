@@ -4,7 +4,7 @@ These Live2D model files were copied unchanged from:
 
 - Project: `eeg1412/Live2dRem`
 - Source: https://github.com/eeg1412/Live2dRem
-- Imported from the user's local `Live2dRem-master/live2d/model/rem` directory
+- The complete model is distributed in this repository under `assets/rem/`
 
 The upstream project is distributed under GPL v2. Its README separately states
 that the Rem model is provided only for learning and communication and must not

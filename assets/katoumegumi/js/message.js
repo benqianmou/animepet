@@ -158,8 +158,8 @@ if(!norunFlag){
 		{
 			id: 'rem',
 			name: '蕾姆',
-			model: 'model/rem/rem.json',
-			texture: 'model/rem/remu2048/texture_00.png'
+			model: '../rem/rem.json',
+			texture: '../rem/remu2048/texture_00.png'
 		}
 	];
 	var live2dModelStorageKey = 'animepet-model';
@@ -228,7 +228,7 @@ if(!norunFlag){
 			notifyLive2dModel(false);
 			showMessage(model.name + '模型资源加载失败');
 		};
-		texture.src = home_Path + message_Path + model.texture;
+		texture.src = message_Path + model.texture;
 	}
 
 	activeLive2dModel = findLive2dModel(localStorage.getItem(live2dModelStorageKey));
