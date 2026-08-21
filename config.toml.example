@@ -4,6 +4,7 @@ base_url = "https://api.deepseek.com"
 model = "deepseek-chat"
 
 # Optional GPT-SoVITS speech output. Start the official api_v2.py service before enabling this.
+# When enabled, service errors are shown instead of silently falling back to a robot voice.
 tts_enabled = false
 tts_base_url = "http://127.0.0.1:9880"
 # A relative path resolves from the AnimePet project when GPT-SoVITS runs locally.

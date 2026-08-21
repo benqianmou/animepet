@@ -147,6 +147,103 @@ if(!norunFlag){
 		if (timeout === null) timeout = 5000;
 		$('.message').delay(timeout).fadeTo(200, 0);
 	}
+
+	var live2dModels = [
+		{
+			id: 'katoumegumi',
+			name: '加藤惠',
+			model: 'model/katou_01/katou_01.model.json',
+			texture: 'model/katou_01/moc/katou.2048/texture_00.png'
+		},
+		{
+			id: 'rem',
+			name: '蕾姆',
+			model: 'model/rem/rem.json',
+			texture: 'model/rem/remu2048/texture_00.png'
+		}
+	];
+	var live2dModelStorageKey = 'animepet-model';
+	var activeLive2dModel = live2dModels[0];
+	var live2dModelReady = false;
+
+	function findLive2dModel(id) {
+		for (var i = 0; i < live2dModels.length; i++) {
+			if (live2dModels[i].id === id) return live2dModels[i];
+		}
+		return live2dModels[0];
+	}
+
+	function notifyLive2dModel(loading) {
+		document.dispatchEvent(new CustomEvent('animepet:modelchange', {
+			detail: {
+				id: activeLive2dModel.id,
+				name: activeLive2dModel.name,
+				loading: loading
+			}
+		}));
+	}
+
+	function replaceLive2dModel(modelPath, initialLoad) {
+		if (initialLoad) {
+			loadlive2d('live2d', message_Path + modelPath);
+			return;
+		}
+
+		// loadlive2d also installs input listeners. Suppress that setup when reusing
+		// the existing canvas so repeated model changes do not duplicate handlers.
+		var windowAddEventListener = window.addEventListener;
+		var documentAddEventListener = document.addEventListener;
+		try {
+			window.addEventListener = function() {};
+			document.addEventListener = function() {};
+			loadlive2d('live2d', message_Path + modelPath);
+		} finally {
+			window.addEventListener = windowAddEventListener;
+			document.addEventListener = documentAddEventListener;
+		}
+	}
+
+	function activateLive2dModel(model, initialLoad) {
+		activeLive2dModel = model;
+		live2dModelReady = false;
+		localStorage.setItem(live2dModelStorageKey, model.id);
+		if (window.stopAnimePetSpeech) window.stopAnimePetSpeech();
+		if (window.setLive2dLipSyncValue) window.setLive2dLipSyncValue(0);
+		$('#live_talk').val('0');
+		notifyLive2dModel(true);
+
+		var texture = new Image();
+		texture.onload = function() {
+			replaceLive2dModel(model.model, initialLoad);
+			setTimeout(function() {
+				$('#landlord').fadeIn(200);
+				live2dModelReady = true;
+				notifyLive2dModel(false);
+				if (!initialLoad) showMessage('已切换到' + model.name);
+			}, 1000);
+			texture = null;
+		};
+		texture.onerror = function() {
+			live2dModelReady = true;
+			notifyLive2dModel(false);
+			showMessage(model.name + '模型资源加载失败');
+		};
+		texture.src = home_Path + message_Path + model.texture;
+	}
+
+	activeLive2dModel = findLive2dModel(localStorage.getItem(live2dModelStorageKey));
+	window.getAnimePetModel = function() {
+		return {
+			id: activeLive2dModel.id,
+			name: activeLive2dModel.name,
+			loading: !live2dModelReady
+		};
+	};
+	window.cycleAnimePetModel = function() {
+		if (!live2dModelReady) return;
+		var index = live2dModels.indexOf(activeLive2dModel);
+		activateLive2dModel(live2dModels[(index + 1) % live2dModels.length], false);
+	};
 	
 	function initLive2d (){
 		var landL = parseInt(sessionStorage.getItem("historywidth"));
@@ -161,28 +258,7 @@ if(!norunFlag){
 	// 拖拽已由 index.html 独立实现（并写入 historywidth/historyheight 持久化位置），
 	// 原 getEvent() 实现依赖 arguments.callee.caller，在现代 WebKitGTK 下失效，故移除。
 	$(document).ready(function() {
-		var AIimgSrc = [
-			home_Path + message_Path + "model/katou_01/moc/katou.2048/texture_00.png"
-		]
-		var images = [];
-		var imgLength = AIimgSrc.length;
-		var loadingNum = 0;
-		for(var i=0;i<imgLength;i++){
-			images[i] = new Image();
-			images[i].src = AIimgSrc[i];
-			images[i].onload = function(){
-				loadingNum++;
-				if(loadingNum===imgLength){
-					setTimeout(function(){
-						$('#landlord').fadeIn(200);
-					},1300);
-					setTimeout(function(){
-						loadlive2d("live2d", message_Path+"model/katou_01/katou_01.model.json");
-					},1000);
-					initLive2d ();
-					images = null;
-				}
-			}
-		}
+		initLive2d();
+		activateLive2dModel(activeLive2dModel, true);
 	});
 }

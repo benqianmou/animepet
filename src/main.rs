@@ -12,10 +12,10 @@ use std::sync::{
 use std::time::{Duration, SystemTime};
 use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
-// 资源路径：编译时嵌入项目根目录，资源自包含在 assets/live2d 下
-const LIVE2D_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/live2d");
+// 资源路径：编译时嵌入项目根目录，资源自包含在 assets/katoumegumi 下
+const LIVE2D_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/katoumegumi");
 
-// 模型尺寸与初始位置（需与 assets/live2d/index.html 中 #landlord 的 CSS 保持一致）
+// 模型尺寸与初始位置（需与 assets/katoumegumi/index.html 中 #landlord 的 CSS 保持一致）
 const MODEL_WIDTH: i32 = 280;
 const MODEL_HEIGHT: i32 = 250;
 const MODEL_HIT_PADDING: i32 = 14;
@@ -23,6 +23,7 @@ const INIT_LEFT: i32 = 5; // message.js 无历史位置时默认 left:5px
 const INIT_BOTTOM: i32 = 0;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CHAT_SERVER_PORT: u16 = 17_364;
 const MAX_HISTORY_MESSAGES: usize = 40;
 const MAX_MEMORY_BYTES: usize = 1024 * 1024;
 const MAX_IDENTITY_BYTES: usize = 256 * 1024;
@@ -67,6 +68,12 @@ struct ChatMessage {
 #[derive(Deserialize)]
 struct ChatRequest {
     message: String,
+    #[serde(default = "default_soul_model")]
+    model: String,
+}
+
+fn default_soul_model() -> String {
+    "katoumegumi".into()
 }
 
 #[derive(Deserialize)]
@@ -112,6 +119,62 @@ fn load_config() -> Result<AppConfig, String> {
 
 fn load_prompt_file(name: &str) -> String {
     std::fs::read_to_string(format!("{}/{}", env!("CARGO_MANIFEST_DIR"), name)).unwrap_or_default()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SoulDocument {
+    frontmatter: String,
+    body: String,
+}
+
+/// Split a skill-style document into its lightweight index and body.
+fn split_soul_document(source: &str) -> SoulDocument {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let Some(after_open) = source
+        .strip_prefix("---\n")
+        .or_else(|| source.strip_prefix("---\r\n"))
+    else {
+        return SoulDocument {
+            frontmatter: String::new(),
+            body: source.trim().to_string(),
+        };
+    };
+    let Some(close_start) = after_open.find("\n---") else {
+        return SoulDocument {
+            frontmatter: String::new(),
+            body: source.trim().to_string(),
+        };
+    };
+    let frontmatter = after_open[..close_start].trim().to_string();
+    let mut body = &after_open[close_start + "\n---".len()..];
+    body = body
+        .strip_prefix("\r\n")
+        .or_else(|| body.strip_prefix('\n'))
+        .unwrap_or(body);
+    SoulDocument {
+        frontmatter,
+        body: body.trim().to_string(),
+    }
+}
+
+fn soul_file_for_model(model_id: &str) -> &'static str {
+    match model_id {
+        "rem" => "souls/rem/SOUL.md",
+        _ => "souls/katoumegumi/SOUL.md",
+    }
+}
+
+fn load_soul_for_model(model_id: &str) -> String {
+    let document = split_soul_document(&load_prompt_file(soul_file_for_model(model_id)));
+    let frontmatter = if document.frontmatter.is_empty() {
+        "id: unknown\nload: body"
+    } else {
+        &document.frontmatter
+    };
+    format!(
+        "当前角色 frontmatter（身份索引）：\n{frontmatter}\n\n当前角色正文（按模型选择加载）：\n{}",
+        document.body
+    )
 }
 
 const IDENTITY_OPEN: &str = "<identity_update>";
@@ -225,7 +288,7 @@ fn stream_chat(req: ChatRequest, tx: Sender<Vec<u8>>, history: Arc<Mutex<Vec<Cha
         role: "system".into(),
         content: format!(
             "{}\n\n用户身份信息（仅记录用户明确提供的事实和偏好）：\n{}\n\n长期记忆：\n{}\n\n身份记录规则：\n- 你不能直接操作文件；如果本轮对话中用户明确提供了姓名、称呼、地区、职业、兴趣、偏好、习惯或其他个人信息，请在正常回复末尾追加一段 <identity_update>...</identity_update>。\n- 标记内部只写简洁的 Markdown 条目，不要写推测、敏感信息、密码、API 密钥或用户没有明确说过的内容。\n- 如果没有新的用户信息，不要输出该标记。标记之外只放给用户看的正常回复。",
-            load_prompt_file("SOUL.md"),
+            load_soul_for_model(&req.model),
             load_prompt_file("IDENTITY.md"),
             load_prompt_file("MEMORY.md")
         ),
@@ -375,7 +438,7 @@ fn synthesize_speech_with_config(
         return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
     }
     if config.tts_ref_audio.trim().is_empty() || config.tts_prompt_text.trim().is_empty() {
-        return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+        return Err("已启用加藤惠语音，但缺少 tts_ref_audio 或 tts_prompt_text 配置".into());
     }
     let prompt_lang = normalize_language(&config.tts_prompt_lang)?;
     let ref_audio_path = resolve_tts_reference_path(&config.tts_ref_audio);
@@ -399,25 +462,26 @@ fn synthesize_speech_with_config(
         .send_json(&payload)
     {
         Ok(response) => response,
-        Err(_) => {
-            return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+        Err(error) => {
+            return Err(format!(
+                "加藤惠语音服务不可用: {error}。请先运行 bash scripts/start-gpt-sovits.sh"
+            ));
         }
     };
-    let audio = match response
+    let audio = response
         .body_mut()
         .with_config()
         .limit(64 * 1024 * 1024)
         .read_to_vec()
-    {
-        Ok(audio) => audio,
-        Err(_) => {
-            return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
-        }
-    };
-    if audio.is_empty() {
-        return synthesize_speech_fallback(text, text_lang).map(|audio| (audio, "fallback"));
+        .map_err(|error| format!("读取 GPT-SoVITS 音频失败: {error}"))?;
+    if !is_wav_audio(&audio) {
+        return Err("GPT-SoVITS 未返回有效 WAV 音频，请检查服务日志和参考音频配置".into());
     }
-    Ok((audio, text_lang))
+    Ok((audio, "gpt-sovits"))
+}
+
+fn is_wav_audio(audio: &[u8]) -> bool {
+    audio.len() >= 12 && &audio[..4] == b"RIFF" && &audio[8..12] == b"WAVE"
 }
 
 fn synthesize_speech_fallback(text: &str, text_lang: &str) -> Result<Vec<u8>, String> {
@@ -444,7 +508,11 @@ fn chrono_like_now() -> String {
 }
 
 fn start_chat_server(root: &str, history: Arc<Mutex<Vec<ChatMessage>>>) -> u16 {
-    let server = tiny_http::Server::http("127.0.0.1:0").expect("failed to bind local server");
+    // A stable origin lets WebKit persist model selection in localStorage across restarts.
+    // Fall back to an ephemeral port if another AnimePet instance already owns it.
+    let server = tiny_http::Server::http(format!("127.0.0.1:{CHAT_SERVER_PORT}"))
+        .or_else(|_| tiny_http::Server::http("127.0.0.1:0"))
+        .expect("failed to bind local server");
     let port = server.server_addr().to_ip().unwrap().port();
     let root = root.to_string();
     std::thread::spawn(move || {
@@ -804,8 +872,8 @@ fn build_ui(app: &Application) {
 mod tests {
     use super::{
         AppConfig, IDENTITY_CLOSE, IDENTITY_OPEN, TtsRequest, contains_japanese,
-        extract_identity_update, normalize_language, percent_decode_path,
-        resolve_tts_reference_path, safe_static_path,
+        extract_identity_update, load_soul_for_model, normalize_language, percent_decode_path,
+        resolve_tts_reference_path, safe_static_path, split_soul_document,
     };
 
     #[test]
@@ -822,6 +890,20 @@ mod tests {
         let (clean, update) = extract_identity_update(&response);
         assert_eq!(clean, response);
         assert!(update.is_none());
+    }
+
+    #[test]
+    fn splits_skill_style_soul_frontmatter_and_body() {
+        let document = split_soul_document("---\nid: rem\nload: body\n---\n# Rem\n");
+        assert_eq!(document.frontmatter, "id: rem\nload: body");
+        assert_eq!(document.body, "# Rem");
+    }
+
+    #[test]
+    fn selects_soul_by_model_with_safe_default() {
+        assert!(load_soul_for_model("rem").contains("id: rem"));
+        assert!(load_soul_for_model("katoumegumi").contains("id: katoumegumi"));
+        assert!(load_soul_for_model("unknown").contains("id: katoumegumi"));
     }
 
     #[test]
@@ -894,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_gptsovits_uses_fallback_wav_audio() {
+    fn unavailable_gptsovits_returns_a_clear_error() {
         let config = AppConfig {
             api_key: "unused".into(),
             base_url: "https://example.invalid".into(),
@@ -905,14 +987,41 @@ mod tests {
             tts_prompt_text: "こんにちは".into(),
             tts_prompt_lang: "ja".into(),
         };
-        let (audio, source) = super::synthesize_speech_with_config(
+        let error = super::synthesize_speech_with_config(
             TtsRequest {
                 text: "今日は".into(),
             },
             config,
         )
-        .unwrap();
-        assert_eq!(source, "fallback");
-        assert!(audio.starts_with(b"RIFF"));
+        .unwrap_err();
+        assert!(error.contains("加藤惠语音服务不可用"));
+    }
+
+    #[test]
+    fn enabled_tts_requires_a_reference_and_transcript() {
+        let config = AppConfig {
+            api_key: "unused".into(),
+            base_url: "https://example.invalid".into(),
+            model: "unused".into(),
+            tts_enabled: true,
+            tts_base_url: "http://127.0.0.1:9880".into(),
+            tts_ref_audio: String::new(),
+            tts_prompt_text: String::new(),
+            tts_prompt_lang: "ja".into(),
+        };
+        let error = super::synthesize_speech_with_config(
+            TtsRequest {
+                text: "你好".into(),
+            },
+            config,
+        )
+        .unwrap_err();
+        assert!(error.contains("缺少 tts_ref_audio 或 tts_prompt_text"));
+    }
+
+    #[test]
+    fn validates_wav_container_header() {
+        assert!(super::is_wav_audio(b"RIFF\x00\x00\x00\x00WAVEdata"));
+        assert!(!super::is_wav_audio(b"not wav audio"));
     }
 }

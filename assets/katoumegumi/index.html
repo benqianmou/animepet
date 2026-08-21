@@ -118,6 +118,7 @@
         .chat-name small { margin-top: 2px; color: var(--chat-muted); font-size: 10px; }
         .chat-name small.is-action { color: var(--chat-coral); cursor: pointer; }
         .chat-actions { display: flex; align-items: center; gap: 2px; }
+        #chat-model,
         #chat-mute {
             display: grid;
             width: 28px;
@@ -131,7 +132,9 @@
             font: 15px/1 sans-serif;
             cursor: pointer;
         }
+        #chat-model:hover,
         #chat-mute:hover { background: rgba(255,255,255,.08); color: var(--chat-text); }
+        #chat-model:disabled { cursor: default; opacity: .42; }
         #chat-mute.is-muted { color: var(--chat-coral); }
         #chat-close {
             display: grid;
@@ -213,8 +216,9 @@
     <input type="hidden" id="live_talk" value="0">
     <section id="chat-panel" aria-label="AnimePet 对话">
         <div id="chat-head">
-            <div class="chat-identity"><span class="chat-status"></span><span class="chat-name"><strong>AnimePet</strong><small>在这里陪着你</small></span></div>
+            <div class="chat-identity"><span class="chat-status"></span><span class="chat-name"><strong id="chat-character-name">AnimePet</strong><small>在这里陪着你</small></span></div>
             <div class="chat-actions">
+                <button id="chat-model" type="button" aria-label="切换模型" title="切换模型" disabled>&#8644;</button>
                 <button id="chat-mute" type="button" aria-label="静音" title="静音">&#128266;</button>
                 <button id="chat-close" type="button" aria-label="关闭" title="关闭">×</button>
             </div>
@@ -305,6 +309,8 @@
             var input = document.getElementById('chat-input');
             var log = document.getElementById('chat-log');
             var mute = document.getElementById('chat-mute');
+            var modelSwitch = document.getElementById('chat-model');
+            var characterName = document.getElementById('chat-character-name');
             var voiceStatus = document.querySelector('.chat-name small');
             var audio = null;
             var speechRequest = null;
@@ -344,6 +350,23 @@
                 setVoiceStatus('在这里陪着你');
                 document.getElementById('live_talk').value = '0';
             }
+            window.stopAnimePetSpeech = stopSpeech;
+            function updateModelUi(model) {
+                if (!model) return;
+                characterName.textContent = model.name;
+                modelSwitch.disabled = !!model.loading;
+                var label = '切换模型（当前：' + model.name + '）';
+                modelSwitch.setAttribute('aria-label', label);
+                modelSwitch.title = label;
+                setVoiceStatus(model.loading ? '正在切换模型...' : '在这里陪着你');
+            }
+            document.addEventListener('animepet:modelchange', function(event) {
+                updateModelUi(event.detail);
+            });
+            modelSwitch.addEventListener('click', function() {
+                if (window.cycleAnimePetModel) window.cycleAnimePetModel();
+            });
+            if (window.getAnimePetModel) updateModelUi(window.getAnimePetModel());
             function primeAudio() {
                 var AudioContext = window.AudioContext || window.webkitAudioContext;
                 if (!AudioContext) return;
@@ -479,7 +502,8 @@
                 stopSpeech();
                 input.value=''; addLine('user', text); var reply=addLine('assistant','思考中...');
                 try {
-                    var response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+                    var selectedModel = window.getAnimePetModel ? window.getAnimePetModel().id : 'katoumegumi';
+                    var response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,model:selectedModel})});
                     if(!response.ok || !response.body) throw new Error('HTTP '+response.status);
                     reply.textContent=''; var reader=response.body.getReader(), decoder=new TextDecoder(); var pending='';
                     while(true){ var part=await reader.read(); if(part.done) break; pending+=decoder.decode(part.value,{stream:true}); var lines=pending.split('\n'); pending=lines.pop();

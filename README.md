@@ -50,7 +50,7 @@ cargo build --release
     cp config.toml.example config.toml
     # 编辑 config.toml，填入 DeepSeek API Key
 
-SOUL.md 是人格设定，IDENTITY.md 是用户身份档案，MEMORY.md 是长期记忆。三者会随每次请求加载；成功对话会追加一条记录到 MEMORY.md。当用户明确提供姓名、偏好、习惯等个人信息时，AI 会通过内部标记让程序追加到 IDENTITY.md。config.toml 已被 .gitignore 忽略，不会被提交。
+`souls/katoumegumi/SOUL.md` 和 `souls/rem/SOUL.md` 是按模型选择的人格设定；文件采用类似 Skill 的渐进式格式：`---` 包裹的 frontmatter 先作为轻量身份索引解析，只有当前选中的模型才加载对应正文。`IDENTITY.md` 是用户身份档案，`MEMORY.md` 是长期记忆；两者会随每次请求加载。成功对话会追加一条记录到 `MEMORY.md`。当用户明确提供姓名、偏好、习惯等个人信息时，AI 会通过内部标记让程序追加到 `IDENTITY.md`。根目录 `SOUL.md` 仅保留为旧版本兼容档案，不参与模型切换。config.toml 已被 .gitignore 忽略，不会被提交。
 
 ```bash
 ./target/release/animepet
@@ -74,7 +74,7 @@ AnimePet 可以将每次 AI 回复自动交给本地或局域网内的 [GPT-SoVI
 
 需要发布可下载的语音资源时，只能将具有明确再分发授权的音频放到 GitHub Release 或其他受限下载位置；不要将来源不明的游戏 `.bank` 文件提交进源码仓库。
 
-回复为中文时，AnimePet 请求 GPT-SoVITS 使用 `zh`；回复含日语假名时使用 `ja`。未启动或未配置 TTS 服务时，AnimePet 会用本机 `espeak-ng` 生成系统语音兜底，保证角色能先发出声音；这不是加藤惠音色，只用于在 GPT-SoVITS 配好前避免沉默。
+回复为中文时，AnimePet 请求 GPT-SoVITS 使用 `zh`；回复含日语假名时使用 `ja`。`tts_enabled = false` 时可用本机 `espeak-ng` 系统语音；一旦启用 GPT-SoVITS，服务不可用会在聊天窗明确报错，不再静默播放机器人音。若看到“加藤惠语音服务不可用”，先运行 `bash scripts/start-gpt-sovits.sh` 并保持该终端运行。
 
 **环境要求**：需要在 Wayland 会话（推荐 niri）下运行，并确保运行机器可以访问 api.deepseek.com。程序会自动设置 WAYLAND_DISPLAY 和 GDK_BACKEND 环境变量。
 
@@ -88,7 +88,12 @@ animepet/
 ├── Cargo.lock              # 依赖版本锁定（保证可复现构建）
 ├── .gitignore              # 忽略 /target 构建产物
 ├── README.md
-├── SOUL.md                  # AI 人格设定
+├── SOUL.md                  # 旧版兼容人格档案
+├── souls/
+│   ├── katoumegumi/
+│   │   └── SOUL.md          # 加藤惠人格（frontmatter + 正文）
+│   └── rem/
+│       └── SOUL.md          # 蕾姆人格（frontmatter + 正文）
 ├── IDENTITY.md              # 用户身份和偏好档案
 ├── MEMORY.md                # 长期对话记忆
 ├── voice/
@@ -99,13 +104,15 @@ animepet/
 ├── src/
 │   └── main.rs             # 全部 Rust 代码（约 170 行）
 └── assets/
-    └── live2d/             # Live2D 资源（自包含，运行时加载）
+    └── katoumegumi/        # Live2D 资源（自包含，运行时加载）
         ├── index.html      # HTML 包装层（气泡样式 + 拖拽通信）
         ├── js/
         │   ├── live2d.js   # Live2D 引擎
         │   └── message.js  # 交互逻辑
         ├── message.json    # 消息文案配置
-        └── model/katou_01/ # 加藤惠模型
+        └── model/
+            ├── katou_01/   # 加藤惠模型
+            └── rem/        # 蕾姆模型（仅供学习交流，禁止商用）
 ```
 
 ## 🏗️ 架构说明
@@ -119,10 +126,14 @@ animepet/
 
 ## 🎨 自定义
 
-- **切换模型**：替换 `assets/live2d/model/` 下的模型文件，并修改 `index.html` 中的 `loadlive2d()` 调用
-- **气泡样式**：编辑 `assets/live2d/index.html` 中的 `.message` CSS
-- **对话文案**：编辑 `assets/live2d/message.json`
+- **切换模型**：打开对话框，点击标题栏的切换按钮；当前选择会保存在 `localStorage`，重启后继续使用
+- **模型配置**：编辑 `assets/katoumegumi/js/message.js` 中的 `live2dModels`
+- **气泡样式**：编辑 `assets/katoumegumi/index.html` 中的 `.message` CSS
+- **对话文案**：编辑 `assets/katoumegumi/message.json`
 
 ## 📄 许可证
 
-MIT
+项目代码使用 MIT 许可证。蕾姆模型来自
+[`eeg1412/Live2dRem`](https://github.com/eeg1412/Live2dRem)，上游项目使用 GPL v2，
+且其 README 声明模型仅供学习交流、禁止商用；详见
+`assets/katoumegumi/model/rem/NOTICE.md`。
