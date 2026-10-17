@@ -168,7 +168,7 @@
         .chat-line.assistant { margin-right: auto; border: 1px solid rgba(119,192,178,.22); border-radius: 11px 11px 11px 4px; background: rgba(119,192,178,.11); color: #eff8f5; }
         #chat-form {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 52px;
+            grid-template-columns: minmax(0, 1fr) 38px 52px;
             align-items: end;
             gap: 7px;
             min-height: 57px;
@@ -211,10 +211,25 @@
         #chat-send:hover { background: var(--chat-coral-hover); }
         #chat-send:active { transform: translateY(1px); }
         #chat-send:disabled { cursor: default; opacity: .5; }
+        #chat-record {
+            width: 38px;
+            height: 38px;
+            padding: 0;
+            border: 1px solid rgba(255,255,255,.16);
+            border-radius: 8px;
+            background: rgba(8, 10, 14, .38);
+            color: var(--chat-muted);
+            font: 17px/1 sans-serif;
+            cursor: pointer;
+            transition: background .14s, color .14s, border-color .14s;
+        }
+        #chat-record:hover { background: rgba(255,255,255,.1); color: var(--chat-text); }
+        #chat-record.is-recording { border-color: var(--chat-coral); background: rgba(229,139,158,.2); color: var(--chat-coral-hover); }
+        #chat-record:disabled { cursor: default; opacity: .42; }
         @media (max-width: 420px) {
             #chat-panel { width: calc(100vw - 16px); height: min(372px, calc(100vh - 16px)); }
             #chat-log { padding: 10px; }
-            #chat-form { grid-template-columns: minmax(0, 1fr) 48px; padding: 8px; }
+            #chat-form { grid-template-columns: minmax(0, 1fr) 36px 48px; padding: 8px; }
             #chat-send { width: 48px; }
         }
     </style>
@@ -236,7 +251,7 @@
             </div>
         </div>
         <div id="chat-log"></div>
-        <form id="chat-form"><textarea id="chat-input" placeholder="说点什么..." maxlength="4000" rows="1"></textarea><button id="chat-send" type="submit">发送</button></form>
+        <form id="chat-form"><textarea id="chat-input" placeholder="说点什么..." maxlength="4000" rows="1"></textarea><button id="chat-record" type="button" aria-label="语音输入" title="语音输入">&#127908;</button><button id="chat-send" type="submit">发送</button></form>
     </section>
 
     <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
@@ -320,6 +335,7 @@
             var form = document.getElementById('chat-form');
             var input = document.getElementById('chat-input');
             var log = document.getElementById('chat-log');
+            var recordButton = document.getElementById('chat-record');
             var mute = document.getElementById('chat-mute');
             var modelSwitch = document.getElementById('chat-model');
             var characterName = document.getElementById('chat-character-name');
@@ -331,6 +347,9 @@
             var lipSyncFrame = null;
             var muted = localStorage.getItem('animepet-muted') === '1';
             var chatBusy = false;
+            var recorder = null;
+            var recordStream = null;
+            var recordChunks = [];
 
             function addLine(role, text) { var node=document.createElement('div'); node.className='chat-line '+role; node.textContent=text; log.appendChild(node); log.scrollTop=log.scrollHeight; return node; }
             function setVoiceStatus(text, actionable) {
@@ -506,8 +525,73 @@
                 input.style.height = '38px';
                 input.style.height = Math.min(input.scrollHeight, 82) + 'px';
             });
+            function setRecordingUi(recording) {
+                recordButton.classList.toggle('is-recording', recording);
+                recordButton.innerHTML = recording ? '&#9632;' : '&#127908;';
+                recordButton.setAttribute('aria-label', recording ? '停止录音' : '语音输入');
+                recordButton.title = recording ? '停止录音' : '语音输入';
+                if (recording) setVoiceStatus('正在录音，再点一次结束');
+            }
+            function recordingMimeType() {
+                var options = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+                for (var i = 0; i < options.length; i++) {
+                    if (!window.MediaRecorder.isTypeSupported || window.MediaRecorder.isTypeSupported(options[i])) return options[i];
+                }
+                return '';
+            }
+            async function transcribeRecording(blob, mime) {
+                setVoiceStatus('正在识别语音...');
+                try {
+                    var response = await fetch('/stt', {method: 'POST', headers: {'Content-Type': mime || 'audio/webm'}, body: blob});
+                    var payload = await response.text();
+                    if (!response.ok) throw new Error(payload || ('HTTP ' + response.status));
+                    var result = JSON.parse(payload);
+                    var text = (result.text || '').trim();
+                    if (!text) throw new Error('没有识别出文字');
+                    input.value = input.value.trim() ? input.value.trim() + ' ' + text : text;
+                    input.dispatchEvent(new Event('input'));
+                    input.focus();
+                    setVoiceStatus('语音已填入输入框');
+                } catch (error) {
+                    setVoiceStatus('语音识别失败：' + error.message);
+                }
+            }
+            function stopRecording() {
+                if (recorder && recorder.state !== 'inactive') recorder.stop();
+            }
+            recordButton.addEventListener('click', async function(){
+                if (recorder && recorder.state === 'recording') { stopRecording(); return; }
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+                    setVoiceStatus('当前环境不支持录音');
+                    return;
+                }
+                try {
+                    recordStream = await navigator.mediaDevices.getUserMedia({audio: true});
+                    var mime = recordingMimeType();
+                    recorder = mime ? new MediaRecorder(recordStream, {mimeType: mime}) : new MediaRecorder(recordStream);
+                    recordChunks = [];
+                    recorder.addEventListener('dataavailable', function(event){ if (event.data && event.data.size) recordChunks.push(event.data); });
+                    recorder.addEventListener('stop', function(){
+                        var actualMime = recorder.mimeType || mime || 'audio/webm';
+                        var blob = new Blob(recordChunks, {type: actualMime});
+                        if (recordStream) recordStream.getTracks().forEach(function(track){ track.stop(); });
+                        recordStream = null;
+                        recorder = null;
+                        setRecordingUi(false);
+                        if (blob.size) transcribeRecording(blob, actualMime);
+                    }, {once: true});
+                    recorder.start();
+                    setRecordingUi(true);
+                } catch (error) {
+                    if (recordStream) recordStream.getTracks().forEach(function(track){ track.stop(); });
+                    recordStream = null;
+                    recorder = null;
+                    setVoiceStatus('无法访问麦克风：' + error.message);
+                }
+            });
             form.addEventListener('submit', async function(e){
                 e.preventDefault(); var text=input.value.trim(); if(!text || chatBusy) return;
+                stopRecording();
                 chatBusy = true;
                 document.getElementById('chat-send').disabled = true;
                 primeAudio();

@@ -12,3 +12,14 @@ tts_base_url = "http://127.0.0.1:9880"
 tts_ref_audio = "voice/katou-reference.wav"
 tts_prompt_text = "Pilots, your mission is to establish and hold air superiority over the target sector."
 tts_prompt_lang = "en"
+
+# Optional Whisper speech input. The default provider talks to whisper.cpp server.
+stt_enabled = false
+stt_provider = "whisper-cpp"
+stt_base_url = "http://127.0.0.1:8081"
+# whisper.cpp loads the model when its server starts, so this is unused by that provider.
+stt_model = "whisper-1"
+# Empty or "auto" lets the STT server detect the language. Examples: zh, ja, en.
+stt_language = "auto"
+# Optional Bearer token for a remote STT gateway; leave empty for local services.
+stt_api_key = ""

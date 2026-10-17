@@ -10,7 +10,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 use std::time::{Duration, SystemTime};
-use webkit2gtk::{SettingsExt, WebView, WebViewExt};
+use webkit2gtk::{PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebView, WebViewExt};
 
 // 静态资源根目录；katoumegumi 与 rem 是并列的模型资源目录。
 const ASSETS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
@@ -28,6 +28,7 @@ const MAX_HISTORY_MESSAGES: usize = 40;
 const MAX_MEMORY_BYTES: usize = 1024 * 1024;
 const MAX_IDENTITY_BYTES: usize = 256 * 1024;
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
+const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct AppConfig {
@@ -46,6 +47,18 @@ struct AppConfig {
     tts_prompt_text: String,
     #[serde(default = "default_tts_prompt_lang")]
     tts_prompt_lang: String,
+    #[serde(default)]
+    stt_enabled: bool,
+    #[serde(default = "default_stt_base_url")]
+    stt_base_url: String,
+    #[serde(default = "default_stt_model")]
+    stt_model: String,
+    #[serde(default)]
+    stt_language: String,
+    #[serde(default)]
+    stt_api_key: String,
+    #[serde(default = "default_stt_provider")]
+    stt_provider: String,
 }
 fn default_base_url() -> String {
     "https://api.deepseek.com".into()
@@ -58,6 +71,15 @@ fn default_tts_base_url() -> String {
 }
 fn default_tts_prompt_lang() -> String {
     "ja".into()
+}
+fn default_stt_base_url() -> String {
+    "http://127.0.0.1:8000".into()
+}
+fn default_stt_model() -> String {
+    "whisper-1".into()
+}
+fn default_stt_provider() -> String {
+    "openai".into()
 }
 
 #[derive(Clone, Serialize)]
@@ -78,6 +100,11 @@ fn default_soul_model() -> String {
 
 #[derive(Deserialize)]
 struct TtsRequest {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct SttResponse {
     text: String,
 }
 
@@ -503,6 +530,113 @@ fn synthesize_speech_fallback(text: &str, text_lang: &str) -> Result<Vec<u8>, St
     Ok(output.stdout)
 }
 
+fn stt_endpoint(base_url: &str, provider: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if provider.eq_ignore_ascii_case("whisper-cpp") {
+        return if base.ends_with("/inference") {
+            base.to_string()
+        } else {
+            format!("{base}/inference")
+        };
+    }
+    if base.ends_with("/v1/audio/transcriptions") {
+        base.to_string()
+    } else {
+        format!("{base}/v1/audio/transcriptions")
+    }
+}
+
+fn audio_extension(mime: &str) -> &'static str {
+    if mime.contains("ogg") {
+        "ogg"
+    } else if mime.contains("wav") {
+        "wav"
+    } else if mime.contains("mp4") || mime.contains("m4a") {
+        "m4a"
+    } else {
+        "webm"
+    }
+}
+
+fn multipart_text_field(body: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+        .as_bytes(),
+    );
+}
+
+fn transcribe_speech(audio: Vec<u8>, mime: &str) -> Result<String, String> {
+    let config = load_config()?;
+    if !config.stt_enabled {
+        return Err(
+            "STT 未启用。请在 config.toml 中设置 stt_enabled = true，并启动 whisper.cpp server"
+                .into(),
+        );
+    }
+    if audio.is_empty() {
+        return Err("STT 音频为空".into());
+    }
+    if audio.len() > MAX_AUDIO_BYTES {
+        return Err(format!(
+            "STT 音频过大（最多 {} MB）",
+            MAX_AUDIO_BYTES / 1024 / 1024
+        ));
+    }
+
+    let boundary = "AnimePetWhisperBoundary";
+    let mut multipart = Vec::with_capacity(audio.len() + 512);
+    let whisper_cpp = config.stt_provider.eq_ignore_ascii_case("whisper-cpp");
+    if !whisper_cpp {
+        multipart_text_field(&mut multipart, boundary, "model", &config.stt_model);
+    } else {
+        multipart_text_field(&mut multipart, boundary, "response_format", "json");
+    }
+    if !config.stt_language.trim().is_empty() && config.stt_language.trim() != "auto" {
+        multipart_text_field(
+            &mut multipart,
+            boundary,
+            "language",
+            config.stt_language.trim(),
+        );
+    }
+    let extension = audio_extension(mime);
+    multipart.extend_from_slice(format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.{extension}\"\r\nContent-Type: {mime}\r\n\r\n"
+    ).as_bytes());
+    multipart.extend_from_slice(&audio);
+    multipart.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    let mut request = http_agent()
+        .post(&stt_endpoint(&config.stt_base_url, &config.stt_provider))
+        .header("Accept", "application/json")
+        .header("Content-Type", &content_type);
+    if !config.stt_api_key.trim().is_empty() {
+        request = request.header(
+            "Authorization",
+            &format!("Bearer {}", config.stt_api_key.trim()),
+        );
+    }
+    let mut response = request
+        .send(multipart)
+        .map_err(|error| format!("Whisper STT 服务不可用: {error}"))?;
+    let response_body = response
+        .body_mut()
+        .with_config()
+        .limit(1024 * 1024)
+        .read_to_string()
+        .map_err(|error| format!("读取 Whisper STT 响应失败: {error}"))?;
+    let parsed: SttResponse = serde_json::from_str(&response_body)
+        .map_err(|error| format!("Whisper STT 返回了无效响应: {error}"))?;
+    let text = parsed.text.trim();
+    if text.is_empty() {
+        return Err("Whisper STT 没有识别出文字".into());
+    }
+    Ok(text.to_string())
+}
+
 fn chrono_like_now() -> String {
     format!("{:?}", SystemTime::now())
 }
@@ -554,6 +688,37 @@ fn start_chat_server(root: &str, history: Arc<Mutex<Vec<ChatMessage>>>) -> u16 {
                                 tiny_http::Response::from_string(error).with_status_code(503),
                             );
                         }
+                    }
+                });
+            } else if route == "/stt" && request.method() == &tiny_http::Method::Post {
+                let mime = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv("Content-Type"))
+                    .map(|header| header.value.as_str().to_string())
+                    .unwrap_or_else(|| "audio/webm".into());
+                let body = match read_request_bytes(&mut request, MAX_AUDIO_BYTES) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let _ = request
+                            .respond(tiny_http::Response::from_string(error).with_status_code(413));
+                        continue;
+                    }
+                };
+                std::thread::spawn(move || match transcribe_speech(body, &mime) {
+                    Ok(text) => {
+                        let header = tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/json; charset=utf-8"[..],
+                        )
+                        .unwrap();
+                        let payload = serde_json::json!({"text": text}).to_string();
+                        let _ = request
+                            .respond(tiny_http::Response::from_string(payload).with_header(header));
+                    }
+                    Err(error) => {
+                        let _ = request
+                            .respond(tiny_http::Response::from_string(error).with_status_code(503));
                     }
                 });
             } else if route == "/chat" && request.method() == &tiny_http::Method::Post {
@@ -671,14 +836,22 @@ fn safe_static_path(root: &str, url: &str) -> Option<PathBuf> {
 }
 
 fn read_request_body(request: &mut tiny_http::Request) -> Result<String, String> {
-    let mut body = String::new();
+    let bytes = read_request_bytes(request, MAX_REQUEST_BYTES)?;
+    String::from_utf8(bytes).map_err(|error| format!("请求体不是有效 UTF-8: {error}"))
+}
+
+fn read_request_bytes(
+    request: &mut tiny_http::Request,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
     request
         .as_reader()
-        .take((MAX_REQUEST_BYTES + 1) as u64)
-        .read_to_string(&mut body)
+        .take((max_bytes + 1) as u64)
+        .read_to_end(&mut body)
         .map_err(|error| error.to_string())?;
-    if body.len() > MAX_REQUEST_BYTES {
-        return Err(format!("请求体过大（最多 {} 字节）", MAX_REQUEST_BYTES));
+    if body.len() > max_bytes {
+        return Err(format!("请求体过大（最多 {} 字节）", max_bytes));
     }
     Ok(body)
 }
@@ -801,6 +974,19 @@ fn build_ui(app: &Application) {
         settings.set_media_playback_requires_user_gesture(false);
         println!("WebView settings configured");
     }
+
+    // WebKitGTK does not show a browser-style permission prompt by itself.
+    // Without handling this signal, navigator.mediaDevices.getUserMedia()
+    // is rejected even when the desktop microphone is available.
+    webview.connect_permission_request(|_, request| {
+        if request.is::<UserMediaPermissionRequest>() {
+            request.allow();
+            println!("Microphone permission granted to WebView");
+            true
+        } else {
+            false
+        }
+    });
 
     let history: Arc<Mutex<Vec<ChatMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let port = start_chat_server(ASSETS_PATH, history);
@@ -964,6 +1150,12 @@ mod tests {
             tts_ref_audio: String::new(),
             tts_prompt_text: String::new(),
             tts_prompt_lang: "ja".into(),
+            stt_enabled: false,
+            stt_base_url: "http://127.0.0.1:8000".into(),
+            stt_model: "whisper-1".into(),
+            stt_language: String::new(),
+            stt_api_key: String::new(),
+            stt_provider: "openai".into(),
         };
         let (audio, source) = super::synthesize_speech_with_config(
             TtsRequest {
@@ -987,6 +1179,12 @@ mod tests {
             tts_ref_audio: "/tmp/missing-reference.wav".into(),
             tts_prompt_text: "こんにちは".into(),
             tts_prompt_lang: "ja".into(),
+            stt_enabled: false,
+            stt_base_url: "http://127.0.0.1:8000".into(),
+            stt_model: "whisper-1".into(),
+            stt_language: String::new(),
+            stt_api_key: String::new(),
+            stt_provider: "openai".into(),
         };
         let error = super::synthesize_speech_with_config(
             TtsRequest {
@@ -1009,6 +1207,12 @@ mod tests {
             tts_ref_audio: String::new(),
             tts_prompt_text: String::new(),
             tts_prompt_lang: "ja".into(),
+            stt_enabled: false,
+            stt_base_url: "http://127.0.0.1:8000".into(),
+            stt_model: "whisper-1".into(),
+            stt_language: String::new(),
+            stt_api_key: String::new(),
+            stt_provider: "openai".into(),
         };
         let error = super::synthesize_speech_with_config(
             TtsRequest {
@@ -1024,5 +1228,37 @@ mod tests {
     fn validates_wav_container_header() {
         assert!(super::is_wav_audio(b"RIFF\x00\x00\x00\x00WAVEdata"));
         assert!(!super::is_wav_audio(b"not wav audio"));
+    }
+
+    #[test]
+    fn builds_openai_compatible_stt_endpoint() {
+        assert_eq!(
+            super::stt_endpoint("http://127.0.0.1:8000", "openai"),
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            super::stt_endpoint("http://127.0.0.1:8000/", "openai"),
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            super::stt_endpoint("http://stt.local/v1/audio/transcriptions", "openai"),
+            "http://stt.local/v1/audio/transcriptions"
+        );
+    }
+
+    #[test]
+    fn builds_whisper_cpp_endpoint() {
+        assert_eq!(
+            super::stt_endpoint("http://127.0.0.1:8080", "whisper-cpp"),
+            "http://127.0.0.1:8080/inference"
+        );
+    }
+
+    #[test]
+    fn maps_recording_mime_types_to_file_extensions() {
+        assert_eq!(super::audio_extension("audio/webm;codecs=opus"), "webm");
+        assert_eq!(super::audio_extension("audio/ogg"), "ogg");
+        assert_eq!(super::audio_extension("audio/wav"), "wav");
+        assert_eq!(super::audio_extension("audio/mp4"), "m4a");
     }
 }

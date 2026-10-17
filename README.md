@@ -2,7 +2,7 @@
 
 在 Wayland 桌面（niri）上运行的二次元桌宠，基于 Rust + GTK3 + WebKitGTK + Live2D。
 
-一只会眨眼、会说话的加藤惠，悬浮在桌面最上层，跨所有工作区显示，可拖拽到任意位置。
+一只会眨眼、会说话的二次元桌宠，悬浮在桌面最上层，跨所有工作区显示，可拖拽到任意位置。内置加藤惠和蕾姆两个 Live2D 模型，可在聊天窗口中随时切换。
 
 ## ✨ 功能特性
 
@@ -13,7 +13,10 @@
 - **输入穿透** — 点击模型以外的区域穿透到下层应用
 - **对话气泡** — 模型头顶显示对话文字，半透明悬浮效果
 - **DeepSeek AI 对话** — 点击桌宠打开聊天窗口，支持流式回复、多轮上下文和本地人格/身份/记忆文件
+- **双模型切换** — 内置加藤惠与蕾姆；聊天窗口标题栏的模型切换按钮可即时切换，选择会保存到本地
 - **Live2D 动画** — 完整保留表情、眨眼、物理摆动等动画
+- **陪伴式聊天界面** — 深色半透明面板、角色/用户消息区分、语音状态反馈和窄屏适配
+- **语音输入（STT）** — 浏览器录音后交给本地 Whisper 识别，结果自动回填输入框
 
 ## 📦 系统依赖
 
@@ -52,6 +55,8 @@ cargo build --release
 
 `souls/katoumegumi/SOUL.md` 和 `souls/rem/SOUL.md` 是按模型选择的人格设定；文件采用类似 Skill 的渐进式格式：`---` 包裹的 frontmatter 先作为轻量身份索引解析，只有当前选中的模型才加载对应正文。`IDENTITY.md` 是用户身份档案，`MEMORY.md` 是长期记忆；两者会随每次请求加载。成功对话会追加一条记录到 `MEMORY.md`。当用户明确提供姓名、偏好、习惯等个人信息时，AI 会通过内部标记让程序追加到 `IDENTITY.md`。根目录 `SOUL.md` 仅保留为旧版本兼容档案，不参与模型切换。config.toml 已被 .gitignore 忽略，不会被提交。
 
+启动后点击聊天窗口标题栏的模型切换按钮即可在加藤惠和蕾姆之间切换。切换只改变当前 Live2D 形象和对应人格文件，不会删除已有的身份档案或长期记忆；当前选择保存在浏览器 `localStorage`，重启后会恢复。
+
 ```bash
 ./target/release/animepet
 ```
@@ -75,6 +80,37 @@ AnimePet 可以将每次 AI 回复自动交给本地或局域网内的 [GPT-SoVI
 需要发布可下载的语音资源时，只能将具有明确再分发授权的音频放到 GitHub Release 或其他受限下载位置；不要将来源不明的游戏 `.bank` 文件提交进源码仓库。
 
 回复为中文时，AnimePet 请求 GPT-SoVITS 使用 `zh`；回复含日语假名时使用 `ja`。`tts_enabled = false` 时可用本机 `espeak-ng` 系统语音；一旦启用 GPT-SoVITS，服务不可用会在聊天窗明确报错，不再静默播放机器人音。若看到“加藤惠语音服务不可用”，先运行 `bash scripts/start-gpt-sovits.sh` 并保持该终端运行。
+
+### 语音输入（Whisper STT）
+
+聊天输入框左侧的麦克风按钮会调用 WebKitGTK 的浏览器录音权限。录音结束后，AnimePet 通过本地 Rust 代理将音频转发给 whisper.cpp server 的 `POST /inference` 接口，识别结果会回填到输入框，发送前仍可修改。浏览器通常产生 `webm/opus`，启动脚本使用 `--convert` 和 FFmpeg 自动转换为 Whisper 可读的 16 kHz 单声道 WAV。
+
+1. 安装构建工具和 FFmpeg（Arch Linux）：`sudo pacman -S cmake ffmpeg`。Debian/Ubuntu 可使用 `sudo apt install cmake ffmpeg`。
+2. 在 AnimePet 项目目录下载并编译 whisper.cpp：
+
+   ```bash
+   cd /home/qian/Projects/animepet
+   git clone https://github.com/ggerganov/whisper.cpp.git
+   cd whisper.cpp
+   cmake -B build -DWHISPER_BUILD_SERVER=ON
+   cmake --build build -j2
+   bash models/download-ggml-model.sh base
+   cd ..
+   ```
+
+3. 确认 `config.toml` 使用与服务相同的端口：
+
+   ```toml
+   stt_enabled = true
+   stt_provider = "whisper-cpp"
+   stt_base_url = "http://127.0.0.1:8081"
+   stt_language = "auto"
+   ```
+
+4. 启动 STT 服务并保持终端运行：`bash scripts/start-whisper-cpp.sh`。脚本会加载 `ggml-base.bin`、监听 `127.0.0.1:8081`，并启用 FFmpeg 转码。若端口被占用，修改脚本中的 `--port`，同时修改 `config.toml` 的 `stt_base_url`。
+5. 重新启动 AnimePet，首次点击麦克风时允许 WebKit 访问麦克风。服务不可用或未启用时，状态栏会显示具体错误，不会影响文字聊天。建议每次录音持续至少 2 秒，并在 Whisper 终端确认收到请求。
+
+STT 服务只接收 Rust 本地代理转发的录音，浏览器页面不会接触任何服务密钥。录音请求限制为 25 MB，浏览器通常会产生 webm/opus 格式。
 
 **环境要求**：需要在 Wayland 会话（推荐 niri）下运行，并确保运行机器可以访问 api.deepseek.com。程序会自动设置 WAYLAND_DISPLAY 和 GDK_BACKEND 环境变量。
 
@@ -100,9 +136,10 @@ animepet/
 │   └── README.md             # 本地参考音频说明（实际音频默认不提交）
 ├── scripts/
 │   ├── import-katovoice.sh   # 导入并规范化本地参考音频
-│   └── start-gpt-sovits.sh   # 启动同级 GPT-SoVITS API
+│   ├── start-gpt-sovits.sh   # 启动同级 GPT-SoVITS API
+│   └── start-whisper-cpp.sh  # 启动 Whisper STT 服务并自动转码
 ├── src/
-│   └── main.rs             # 全部 Rust 代码（约 170 行）
+│   └── main.rs             # GTK 窗口、本地服务器与对话/语音逻辑
 └── assets/
     ├── katoumegumi/        # 加藤惠 Live2D 资源与桌宠页面
     │   ├── index.html      # HTML 包装层（气泡样式 + 拖拽通信）
@@ -134,6 +171,19 @@ animepet/
 - **模型配置**：编辑 `assets/katoumegumi/js/message.js` 中的 `live2dModels`
 - **气泡样式**：编辑 `assets/katoumegumi/index.html` 中的 `.message` CSS
 - **对话文案**：编辑 `assets/katoumegumi/message.json`
+
+### 界面设计与样式
+
+桌宠的主要视觉界面由 WebKitGTK 中加载的 HTML/CSS 绘制，而不是 GTK 原生控件：
+
+- `#landlord` 和 `#live2d` 负责角色位置、模型画布和拖拽热区
+- `.message` 负责角色头顶的对话气泡
+- `#chat-panel`、`.chat-line` 和 `#chat-form` 负责聊天面板、消息气泡和输入区
+- CSS 变量集中在 `:root`，可从这里调整背景、文字、强调色和状态色
+
+当前采用轻量的半透明深色面板配合珊瑚色强调按钮、薄荷色在线状态，聊天面板会根据角色位置自动避让，并在窄屏下收缩到窗口边距内。修改样式后重新启动 AnimePet 即可看到效果。
+
+项目目前保持 GTK3 + WebKitGTK 架构。GTK4 的 CSS 主要影响 GTK 原生控件，不会直接改变 Live2D 页面；如果只想调整桌宠外观，优先修改上述 HTML/CSS。
 
 ## 📄 许可证
 
