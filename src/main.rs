@@ -2,12 +2,11 @@ use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow};
 use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use serde::Deserialize;
-use std::io::Read;
 use std::path::Path;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, Ordering},
-    mpsc::{self, Receiver, Sender},
+    mpsc::{self},
 };
 use std::time::{Duration, SystemTime};
 use webkit2gtk::{
@@ -15,21 +14,17 @@ use webkit2gtk::{
 };
 
 mod http_util;
-use http_util::{
-    parse_region_spec, read_request_body, read_request_bytes, request_is_authorized, respond_json,
-    respond_text, serve_file, session_token,
-};
+use http_util::{parse_region_spec, session_token};
 
 mod speech;
-use speech::{synthesize_speech, transcribe_speech};
 
 mod chat;
-use chat::{ChatMessage, ChatRequest, stream_chat};
+use chat::ChatMessage;
 
 mod state;
-use state::{
-    read_state_json, send_desktop_notification, validate_state_payload, write_state_atomic,
-};
+
+mod server;
+use server::start_chat_server;
 
 // 静态资源根目录；katoumegumi 页面与 rem / megumin / darkness / aqua 模型目录并列。
 const ASSETS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
@@ -42,12 +37,12 @@ const INIT_LEFT: i32 = 5; // message.js 无历史位置时默认 left:5px
 const INIT_BOTTOM: i32 = 0;
 pub(crate) const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const CHAT_SERVER_PORT: u16 = 17_364;
+pub(crate) const CHAT_SERVER_PORT: u16 = 17_364;
 pub(crate) const MAX_HISTORY_MESSAGES: usize = 40;
 pub(crate) const MAX_MEMORY_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_IDENTITY_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
-const MAX_STATE_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_STATE_BYTES: usize = 64 * 1024;
 
 #[derive(Deserialize)]
 pub(crate) struct AppConfig {
@@ -120,26 +115,7 @@ pub(crate) fn http_agent() -> ureq::Agent {
     config.into()
 }
 
-struct StreamReader {
-    rx: Receiver<Vec<u8>>,
-    pending: Vec<u8>,
-}
-impl Read for StreamReader {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.pending.is_empty() {
-            self.pending = self.rx.recv().unwrap_or_default();
-        }
-        if self.pending.is_empty() {
-            return Ok(0);
-        }
-        let n = out.len().min(self.pending.len());
-        out[..n].copy_from_slice(&self.pending[..n]);
-        self.pending.drain(..n);
-        Ok(n)
-    }
-}
-
-pub(crate) fn load_config() -> Result<AppConfig, String> {
+fn load_config() -> Result<AppConfig, String> {
     let text = std::fs::read_to_string(format!("{}/config.toml", env!("CARGO_MANIFEST_DIR")))
         .map_err(|_| {
             "缺少 config.toml。请复制 config.toml.example 并填写 DeepSeek API Key。".to_string()
@@ -222,201 +198,6 @@ pub(crate) fn chrono_like_now() -> String {
 }
 
 /// 陪伴状态与配置的持久化目录（XDG_DATA_HOME 优先）。
-/// 启动本地 HTTP 服务：聊天 / TTS / STT / 状态 / 通知 / 退出。
-fn start_chat_server(
-    root: &str,
-    history: Arc<Mutex<Vec<ChatMessage>>>,
-    quit_tx: Sender<()>,
-    token: String,
-) -> u16 {
-    // A stable origin lets WebKit persist model selection in localStorage across restarts.
-    // Fall back to an ephemeral port if another AnimePet instance already owns it.
-    let server = tiny_http::Server::http(format!("127.0.0.1:{CHAT_SERVER_PORT}"))
-        .or_else(|_| tiny_http::Server::http("127.0.0.1:0"))
-        .expect("failed to bind local server");
-    let port = server.server_addr().to_ip().unwrap().port();
-    let root = root.to_string();
-    std::thread::spawn(move || {
-        for mut request in server.incoming_requests() {
-            let route = request.url().split('?').next().unwrap_or("");
-            if route == "/tts" && request.method() == &tiny_http::Method::Post {
-                if !request_is_authorized(&request, &token) {
-                    respond_text(request, 403, "forbidden");
-                    continue;
-                }
-                let body = match read_request_body(&mut request) {
-                    Ok(body) => body,
-                    Err(error) => {
-                        respond_text(request, 413, &error);
-                        continue;
-                    }
-                };
-                std::thread::spawn(move || {
-                    match serde_json::from_str::<TtsRequest>(&body)
-                        .map_err(|e| e.to_string())
-                        .and_then(synthesize_speech)
-                    {
-                        Ok((audio, lang)) => {
-                            let header = tiny_http::Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"audio/wav"[..],
-                            )
-                            .unwrap();
-                            let voice_header = tiny_http::Header::from_bytes(
-                                &b"X-AnimePet-TTS"[..],
-                                lang.as_bytes(),
-                            )
-                            .unwrap();
-                            let _ = request.respond(
-                                tiny_http::Response::from_data(audio)
-                                    .with_header(header)
-                                    .with_header(voice_header),
-                            );
-                        }
-                        Err(error) => {
-                            respond_text(request, 503, &error);
-                        }
-                    }
-                });
-            } else if route == "/stt" && request.method() == &tiny_http::Method::Post {
-                if !request_is_authorized(&request, &token) {
-                    respond_text(request, 403, "forbidden");
-                    continue;
-                }
-                let mime = request
-                    .headers()
-                    .iter()
-                    .find(|header| header.field.equiv("Content-Type"))
-                    .map(|header| header.value.as_str().to_string())
-                    .unwrap_or_else(|| "audio/webm".into());
-                let body = match read_request_bytes(&mut request, MAX_AUDIO_BYTES) {
-                    Ok(body) => body,
-                    Err(error) => {
-                        respond_text(request, 413, &error);
-                        continue;
-                    }
-                };
-                std::thread::spawn(move || match transcribe_speech(body, &mime) {
-                    Ok(text) => {
-                        let header = tiny_http::Header::from_bytes(
-                            &b"Content-Type"[..],
-                            &b"application/json; charset=utf-8"[..],
-                        )
-                        .unwrap();
-                        let payload = serde_json::json!({"text": text}).to_string();
-                        let _ = request
-                            .respond(tiny_http::Response::from_string(payload).with_header(header));
-                    }
-                    Err(error) => {
-                        respond_text(request, 503, &error);
-                    }
-                });
-            } else if route == "/state" {
-                match *request.method() {
-                    tiny_http::Method::Get => {
-                        respond_json(request, 200, &read_state_json());
-                    }
-                    tiny_http::Method::Post => {
-                        if !request_is_authorized(&request, &token) {
-                            respond_text(request, 403, "forbidden");
-                            continue;
-                        }
-                        let body = match read_request_bytes(&mut request, MAX_STATE_BYTES).and_then(
-                            |bytes| {
-                                String::from_utf8(bytes)
-                                    .map_err(|error| format!("状态不是有效 UTF-8: {error}"))
-                            },
-                        ) {
-                            Ok(body) => body,
-                            Err(error) => {
-                                respond_text(request, 413, &error);
-                                continue;
-                            }
-                        };
-                        match validate_state_payload(&body)
-                            .and_then(|state| write_state_atomic(&state).map(|_| state))
-                        {
-                            Ok(state) => respond_json(request, 200, &state),
-                            Err(error) => respond_text(request, 400, &error),
-                        }
-                    }
-                    _ => respond_text(request, 405, "405 Method Not Allowed"),
-                }
-            } else if route == "/notify" && request.method() == &tiny_http::Method::Post {
-                if !request_is_authorized(&request, &token) {
-                    respond_text(request, 403, "forbidden");
-                    continue;
-                }
-                let body = match read_request_body(&mut request) {
-                    Ok(body) => body,
-                    Err(error) => {
-                        respond_text(request, 413, &error);
-                        continue;
-                    }
-                };
-                let payload: serde_json::Value =
-                    serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-                let title = payload["title"].as_str().unwrap_or("AnimePet").to_string();
-                let message = payload["body"].as_str().unwrap_or("").to_string();
-                std::thread::spawn(move || {
-                    if let Err(error) = send_desktop_notification(&title, &message) {
-                        eprintln!("desktop notification skipped: {error}");
-                    }
-                });
-                respond_text(request, 200, "ok");
-            } else if route == "/app/quit" && request.method() == &tiny_http::Method::Post {
-                if !request_is_authorized(&request, &token) {
-                    respond_text(request, 403, "forbidden");
-                    continue;
-                }
-                let _ = quit_tx.send(());
-                respond_text(request, 200, "bye");
-            } else if route == "/chat" && request.method() == &tiny_http::Method::Post {
-                if !request_is_authorized(&request, &token) {
-                    respond_text(request, 403, "forbidden");
-                    continue;
-                }
-                let body = match read_request_body(&mut request) {
-                    Ok(body) => body,
-                    Err(error) => {
-                        respond_text(request, 413, &error);
-                        continue;
-                    }
-                };
-                let parsed = serde_json::from_str::<ChatRequest>(&body);
-                if let Ok(chat) = parsed {
-                    let (tx, rx) = mpsc::channel();
-                    let history_ref = history.clone();
-                    std::thread::spawn(move || stream_chat(chat, tx, history_ref));
-                    let header = tiny_http::Header::from_bytes(
-                        &b"Content-Type"[..],
-                        &b"application/x-ndjson"[..],
-                    )
-                    .unwrap();
-                    let response = tiny_http::Response::new(
-                        tiny_http::StatusCode(200),
-                        vec![header],
-                        StreamReader {
-                            rx,
-                            pending: vec![],
-                        },
-                        None,
-                        None,
-                    );
-                    let _ = request.respond(response);
-                } else {
-                    respond_text(request, 400, "bad request");
-                }
-            } else {
-                serve_file(request, &root, &token);
-            }
-        }
-    });
-    port
-}
-
-/// 将输入热区设置为以 (left, bottom) 为左下角、大小为模型尺寸的矩形。
-/// left/bottom 是 JS 侧 #landlord 的 CSS 值（相对窗口左/底），需换算为窗口坐标。
 fn apply_input_region(window: &ApplicationWindow, left: i32, bottom: i32) {
     let (_, win_h) = window.size();
     let x = left - MODEL_HIT_PADDING;
@@ -730,16 +511,14 @@ fn build_ui(app: &Application) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AppConfig, TtsRequest, load_soul_for_model, split_soul_document, validate_state_payload,
-    };
+    use super::{AppConfig, TtsRequest, load_soul_for_model, split_soul_document};
     use crate::chat::{IDENTITY_CLOSE, IDENTITY_OPEN, extract_identity_update};
     use crate::speech::{
         audio_extension, contains_japanese, is_wav_audio, normalize_language,
         resolve_tts_reference_path, stt_endpoint, synthesize_speech_fallback,
         synthesize_speech_with_config,
     };
-    use crate::state::truncate_chars;
+    use crate::state::{truncate_chars, validate_state_payload};
 
     #[test]
     fn extracts_identity_block_and_keeps_visible_reply() {

@@ -12,24 +12,27 @@
 | 模型清单 4 处重复 | 新增 `assets/katoumegumi/models.json`；`message.js` 启动时 fetch；Rust 改为 `souls/<id>/SOUL.md` 安全推导 |
 | `main.rs` HTTP 工具混杂 | 抽出 `src/http_util.rs`（令牌、响应、静态文件、请求体、region 解析 + 3 个测试） |
 | JS 尺寸写死 280/300 | `pet-interact.js` 改为读取 `#landlord.offsetWidth/offsetHeight` |
+| `main.rs` 仍有 server 循环 | 抽出 `src/server.rs`（路由/流式响应），main 降到 ~720 行 |
+| `pet-ui.js` 浮层逻辑 | 抽出 `js/pet-region.js`（overlay 登记、热区并集、placeNear） |
 
 回归：`cargo test` 20 passed；`node --check` 全通过；无头 QA 7/7（热区并集、tab、礼物、回忆、聊天开关、零脚本错误）；真机 `app_ready` + `model_ready` 正常。
 
 ## 剩余计划（按风险从低到高）
 
 1. ~~模型清单单一来源~~（已完成）
-2. **`pet-ui.js` 拆分**
+2. ~~`pet-ui.js` 拆分~~（浮层已拆；其余 Tab/游戏/提醒仍在一起）
+3. **`pet-ui.js` 其余拆分**
    - `pet-region.js`（输入热区并集）、`pet-tabs.js`、`pet-games.js`、`pet-reminders.js`。
    - 收益：单文件从 800+ 行降到 200 行级；风险：中（模块加载顺序与全局 `window.AnimePetUI` 契约）。
-3. **`src/main.rs` 拆分**
+4. **`src/main.rs` 拆分**（已完成 http_util/chat/speech/state/server，剩 GTK UI 与装配）
    - `server.rs`（tiny_http 路由/静态文件/token）、`chat.rs`（DeepSeek 流）、`tts.rs`、`stt.rs`、`state.rs`、`ui.rs`。
    - 收益：消除 1500 行单体的 Divergent Change；风险：高（大量 `pub(crate)` 与测试迁移），建议独立 PR。
 4. **尺寸常量单一来源**
    - Rust `MODEL_WIDTH/HEIGHT/PADDING` 与 CSS/JS 重复。可让 JS 首次上报 `region` 后，Rust 不再自行计算模型矩形。
    - 收益：改模型尺寸只动 CSS；风险：中（启动早期仍需 bootstrap 常量）。
 5. **静态资源内存缓存 / 服务器线程模型**
-   - 目前 tiny_http 单线程串行，长请求会队头阻塞。本地场景影响小，可延后。
+   - 已加 no-store；本地文件读取成本极低，内存缓存收益不足，暂不做（YAGNI）。
 6. **Live2D 不可见时降帧**
-   - 监听 `visibilitychange` 暂停/降低渲染帧率，省电；需要确认 SDK2 / PIXI 两侧的暂停接口。
+   - SDK2 引擎没有暂停接口，需要改 vendor，收益低于风险，暂不做。
 
 原则：每次只做一个模块，保持 `cargo test` + 无头 QA 全绿，再进入下一项。

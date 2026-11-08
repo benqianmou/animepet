@@ -12,7 +12,13 @@
 
     var state = window.AnimePetState;
     var ui = {};
-    var overlays = {};
+    var overlay = window.AnimePetOverlay;
+    ui.enter = overlay.enter;
+    ui.leave = overlay.leave;
+    ui.hasOverlay = overlay.hasOverlay;
+    ui.pauseRegion = overlay.pauseRegion;
+    ui.syncRegion = overlay.syncRegion;
+    ui.placeNear = overlay.placeNear;
 
     var pet = document.getElementById('landlord');
     var panel = document.getElementById('chat-panel');
@@ -42,112 +48,6 @@
     var toastTimer = null;
     var lastHour = new Date().getHours();
     var bound = false;
-
-    // ------------------------------------------------------------ 浮层管理
-
-    function petPosition() {
-        var left = parseInt(pet.style.left, 10);
-        var bottom = parseInt(pet.style.bottom, 10);
-        return {
-            left: isNaN(left) ? 5 : left,
-            bottom: isNaN(bottom) ? 0 : bottom
-        };
-    }
-
-    function clearInputRegion() {
-        document.title = 'chat_open';
-    }
-
-    function restoreInputRegion() {
-        var position = petPosition();
-        document.title = 'chat_close:' + position.left + ',' + position.bottom;
-    }
-
-    var regionTimer = null;
-    var regionPaused = false;
-
-    function rectPayload(el, padding) {
-        var rect = el.getBoundingClientRect();
-        // offsetWidth/Height 不受入场动画的 scale 影响；用中心对齐反推出布局盒。
-        var width = el.offsetWidth || Math.round(rect.width);
-        var height = el.offsetHeight || Math.round(rect.height);
-        if (width <= 0 || height <= 0) return '';
-        var left = rect.left + (rect.width - width) / 2;
-        var top = rect.top + (rect.height - height) / 2;
-        var pad = padding || 0;
-        return [
-            Math.round(left - pad),
-            Math.round(top - pad),
-            Math.round(width + pad * 2),
-            Math.round(height + pad * 2)
-        ].join(',');
-    }
-
-    /**
-     * 输入热区 = 模型 + 当前可见浮层。其余桌面区域保持穿透，
-     * 这样打开聊天窗后仍然可以操作别的窗口。
-     */
-    function pushInputRegion() {
-        if (Object.keys(overlays).length === 0) return;
-        // 猜拳是整屏模态：保持 modal_open（Rust 会清空热区并给键盘焦点），
-        // 不要让 region: 把它覆盖成小热区。
-        if (overlays.rps) return;
-        var parts = [rectPayload(pet, 14)];
-        var chatPanel = document.getElementById('chat-panel');
-        if (overlays.chat && chatPanel.classList.contains('is-open')) parts.push(rectPayload(chatPanel, 0));
-        if (overlays.hud && hud.classList.contains('is-open')) parts.push(rectPayload(hud, 0));
-        if (overlays.menu && menu.classList.contains('is-open')) parts.push(rectPayload(menu, 0));
-        var spec = parts.filter(Boolean).join(';');
-        if (spec) document.title = 'region:' + spec;
-    }
-
-    /**
-     * 合并同一轮事件内的多次调用。用 setTimeout 而不是 rAF：
-     * WebKitGTK / 无头渲染下 rAF 在窗口不可见时可能被节流，热区会卡在旧值。
-     */
-    ui.syncRegion = function () {
-        if (regionPaused || regionTimer) return;
-        regionTimer = window.setTimeout(function () {
-            regionTimer = null;
-            pushInputRegion();
-        }, 0);
-    };
-
-    /**
-     * 只有聊天浮层需要键盘输入（chat_open）；菜单 / 陪伴面板 / 猜拳只扩大输入热区
-     * （overlay_open），避免右键菜单也抢焦点、把窗口抬到最前。
-     */
-    function syncOverlayTitle() {
-        var ids = Object.keys(overlays);
-        if (ids.length === 0) {
-            restoreInputRegion();
-            return;
-        }
-        if (overlays.rps) document.title = 'modal_open';
-        else if (overlays.chat) clearInputRegion();
-        else document.title = 'overlay_open';
-        ui.syncRegion();
-    }
-
-    ui.enter = function (id) {
-        overlays[id] = true;
-        syncOverlayTitle();
-    };
-
-    ui.leave = function (id) {
-        delete overlays[id];
-        syncOverlayTitle();
-    };
-
-    ui.hasOverlay = function () {
-        return Object.keys(overlays).length > 0;
-    };
-
-    /** 拖拽期间暂停热区更新，保持 drag_start 的全屏输入直到松手 */
-    ui.pauseRegion = function (paused) {
-        regionPaused = !!paused;
-        if (!regionPaused) ui.syncRegion();
-    };
 
     // ------------------------------------------------------------ 气泡与提示
 
@@ -224,25 +124,9 @@
 
     // ------------------------------------------------------------ 面板定位
 
-    function placeNear(el, gap) {
-        if (!el) return;
-        gap = gap === undefined ? 12 : gap;
-        var rect = pet.getBoundingClientRect();
-        var width = el.offsetWidth;
-        var height = el.offsetHeight;
-        var left = rect.right + gap;
-        if (left + width > window.innerWidth - 12) left = rect.left - width - gap;
-        left = Math.max(12, Math.min(left, window.innerWidth - width - 12));
-        var top = rect.bottom - height;
-        top = Math.max(12, Math.min(top, window.innerHeight - height - 12));
-        el.style.left = Math.round(left) + 'px';
-        el.style.top = Math.round(top) + 'px';
-    }
-
-    ui.placeNear = placeNear;
 
     ui.reposition = function () {
-        if (hud.classList.contains('is-open')) placeNear(hud, 7);
+        if (hud.classList.contains('is-open')) ui.placeNear(hud, 7);
         if (menu.classList.contains('is-open')) {
             // 菜单由 openMenu 记录锚点，这里只做边界回收
             clampMenu();
@@ -251,7 +135,6 @@
     };
 
     // 聊天面板定位保留在 chat.js 中（那里有更多上下文），这里只暴露给对手势模块
-    ui.petPosition = petPosition;
 
     // ------------------------------------------------------------ HUD
 
@@ -480,7 +363,7 @@
         hud.classList.add('is-open');
         closeMenu();
         refreshHud();
-        placeNear(hud, 7);
+        ui.placeNear(hud, 7);
         ui.syncRegion();
         // 入场动画结束后按最终尺寸再校正一次
         window.setTimeout(ui.syncRegion, 260);

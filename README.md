@@ -183,6 +183,7 @@ animepet/
     │   │   ├── message.js  # 模型加载与本地问候
     │   │   ├── cubism3.js  # Cubism 3/4 模型渲染
     │   │   ├── pet-state.js# 陪伴数值 / 心情 / 阶段 / 礼物 / 签到 / 回忆
+    │   │   ├── pet-region.js # 浮层登记 / 输入热区并集 / 面板定位
     │   │   ├── pet-ui.js   # 陪伴中心 Tab / 菜单 / 猜拳 / 专注 / 提醒
     │   │   ├── pet-interact.js # 手势 / 抛掷物理 / 待机行为
     │   │   ├── chat.js     # 聊天、TTS 播放与 STT 录音
