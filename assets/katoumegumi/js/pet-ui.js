@@ -26,27 +26,9 @@
     var menu = document.getElementById('pet-menu');
     var rps = document.getElementById('pet-rps');
     var toastEl = document.getElementById('pet-toast');
-    var tabsBar = document.getElementById('hud-tabs');
-    var tabButtons = tabsBar ? Array.prototype.slice.call(tabsBar.querySelectorAll('.tab-btn')) : [];
-    var tabPages = {
-        status: document.getElementById('page-status'),
-        interact: document.getElementById('page-interact'),
-        memory: document.getElementById('page-memory')
-    };
-    var activeTab = 'status';
-    var activeTabIndex = 0;
     var lastJournalSig = '';
 
-    var focusBox = document.getElementById('hud-focus');
-    var focusTime = document.getElementById('hud-focus-time');
-    var focusLabel = document.getElementById('hud-focus-label');
-
-    var FOCUS_KEY = 'animepet-focus-v1';
-    var WATER_KEY = 'animepet-last-water';
-    var WATER_INTERVAL = 45 * 60 * 1000;
-    var focus = loadFocus();
     var toastTimer = null;
-    var lastHour = new Date().getHours();
     var bound = false;
 
     // ------------------------------------------------------------ 气泡与提示
@@ -112,6 +94,13 @@
     }
 
     /** 提醒统一出口：气泡 + toast + 语音 + 桌面通知 */
+    ui.isHudOpen = function () {
+        return hud.classList.contains('is-open');
+    };
+
+    ui.animatePet = playPetAnimation;
+    ui.updateGiftUi = function () { updateGiftUi(state.get()); };
+
     ui.remind = function (text, options) {
         options = options || {};
         ui.bubble(text, options.timeout || 5200);
@@ -273,67 +262,11 @@
         document.getElementById('hud-hourly').checked = !!snapshot.settings.hourly;
         updateGiftUi(snapshot);
         renderJournal(snapshot);
-        refreshFocusUi();
+        if (window.AnimePetReminders) window.AnimePetReminders.refreshUi();
     }
 
     ui.refresh = refreshHud;
-
-    // ------------------------------------------------------------ Tab 切换（Telegram 风格）
-
-    function selectTab(name, animate) {
-        var index = -1;
-        for (var i = 0; i < tabButtons.length; i++) {
-            if (tabButtons[i].dataset.tab === name) index = i;
-        }
-        if (index < 0) return;
-        var page = tabPages[name];
-        if (!page) return;
-        if (index === activeTabIndex && page.classList.contains('is-active')) return;
-        var direction = index > activeTabIndex ? 1 : -1;
-        activeTabIndex = index;
-        activeTab = name;
-        tabsBar.style.setProperty('--tab-index', String(index));
-
-        var indicator = tabsBar.querySelector('.tab-indicator');
-        if (indicator && animate) {
-            indicator.classList.add('is-moving');
-            window.clearTimeout(indicator._moveTimer);
-            indicator._moveTimer = window.setTimeout(function () {
-                indicator.classList.remove('is-moving');
-            }, 380);
-        }
-
-        tabButtons.forEach(function (button) {
-            var on = button.dataset.tab === name;
-            button.classList.toggle('is-active', on);
-            button.setAttribute('aria-selected', on ? 'true' : 'false');
-            if (on && animate) {
-                button.classList.remove('is-bouncing');
-                void button.offsetWidth;
-                button.classList.add('is-bouncing');
-                window.setTimeout(function () { button.classList.remove('is-bouncing'); }, 460);
-            }
-        });
-
-        Object.keys(tabPages).forEach(function (key) {
-            var target = tabPages[key];
-            var on = key === name;
-            if (on) {
-                target.hidden = false;
-                // 内容从切换方向滑入：向右切从右侧进来，向左切从左侧进来
-                target.style.setProperty('--page-shift', (direction > 0 ? 18 : -18) + 'px');
-                target.classList.remove('is-active');
-                void target.offsetWidth;
-                target.classList.add('is-active');
-            } else {
-                target.classList.remove('is-active');
-                target.hidden = true;
-            }
-        });
-        ui.syncRegion();
-    }
-
-    ui.selectTab = selectTab;
+    window.setInterval(refreshHud, 15000);
 
     // ------------------------------------------------------------ 爱心粒子
 
@@ -421,7 +354,7 @@
 
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Escape') return;
-        if (rps.classList.contains('is-open')) closeRps();
+        if (rps.classList.contains('is-open') && window.AnimePetRps) window.AnimePetRps.close();
         else if (menu.classList.contains('is-open')) closeMenu();
         else if (hud.classList.contains('is-open')) ui.closeHud();
         else if (panel.classList.contains('is-open') && window.closeChatPanel) window.closeChatPanel();
@@ -462,247 +395,6 @@
         }, 900);
     }
 
-    // ------------------------------------------------------------ 猜拳
-
-    var HANDS = {
-        rock: { emoji: '✊', label: '石头' },
-        scissors: { emoji: '✌️', label: '剪刀' },
-        paper: { emoji: '🖐', label: '布' }
-    };
-    var RPS_BEATS = { rock: 'scissors', scissors: 'paper', paper: 'rock' };
-    var rpsBusy = false;
-
-    var rpsReturnFocus = null;
-
-    function openRps() {
-        rpsReturnFocus = document.activeElement;
-        ui.enter('rps');
-        rps.classList.add('is-open');
-        closeMenu();
-        document.getElementById('rps-you').textContent = '❔';
-        document.getElementById('rps-pet').textContent = '❔';
-        document.getElementById('rps-result').textContent = '出什么？赢了我会有奖励哦。';
-        setRpsDisabled(false);
-        rpsBusy = false;
-        ui.syncRegion();
-        window.setTimeout(ui.syncRegion, 240);
-        var firstChoice = rps.querySelector('.rps-choice');
-        if (firstChoice) firstChoice.focus();
-    }
-
-    function closeRps() {
-        rps.classList.remove('is-open');
-        ui.leave('rps');
-        if (rpsReturnFocus && typeof rpsReturnFocus.focus === 'function') {
-            rpsReturnFocus.focus();
-            rpsReturnFocus = null;
-        }
-    }
-
-    // 焦点陷阱：Tab 只在弹窗内的可交互元素之间循环
-    rps.addEventListener('keydown', function (event) {
-        if (event.key !== 'Tab' || !rps.classList.contains('is-open')) return;
-        var focusable = rps.querySelectorAll('button:not([disabled])');
-        if (!focusable.length) return;
-        var first = focusable[0];
-        var last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-            event.preventDefault();
-            last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault();
-            first.focus();
-        }
-    });
-
-    function setRpsDisabled(disabled) {
-        Array.prototype.forEach.call(rps.querySelectorAll('.rps-choice'), function (button) {
-            button.disabled = disabled;
-        });
-    }
-
-    function playRps(playerHand) {
-        if (rpsBusy) return;
-        rpsBusy = true;
-        setRpsDisabled(true);
-        var keys = Object.keys(HANDS);
-        var petHand = keys[Math.floor(Math.random() * keys.length)];
-        var youEl = document.getElementById('rps-you');
-        var petEl = document.getElementById('rps-pet');
-        var resultEl = document.getElementById('rps-result');
-        youEl.textContent = HANDS[playerHand].emoji;
-        petEl.textContent = '✊';
-        petEl.classList.add('is-shake');
-        resultEl.textContent = '…';
-        window.setTimeout(function () {
-            petEl.classList.remove('is-shake');
-            petEl.textContent = HANDS[petHand].emoji;
-            youEl.classList.remove('is-win', 'is-lose');
-            petEl.classList.remove('is-win', 'is-lose');
-            var outcome;
-            if (playerHand === petHand) {
-                outcome = 'draw';
-            } else if (RPS_BEATS[playerHand] === petHand) {
-                outcome = 'win';
-            } else {
-                outcome = 'lose';
-            }
-            if (outcome === 'win') {
-                youEl.classList.add('is-win');
-                resultEl.textContent = '你赢了！好感 +2，经验 +6';
-                state.add({ exp: 6, affection: 2, mood: 4, stat: 'plays' }, 'rps-win');
-                ui.bubble('唔…这局算你厉害。');
-            } else if (outcome === 'draw') {
-                resultEl.textContent = '平局，再来一局？经验 +2';
-                state.add({ exp: 2, mood: 1, stat: 'plays' }, 'rps-draw');
-            } else {
-                youEl.classList.add('is-lose');
-                resultEl.textContent = '我赢了～不过陪你玩很开心，心情 +2';
-                state.add({ mood: 2, exp: 1, stat: 'plays' }, 'rps-lose');
-            }
-            refreshHud();
-            rpsBusy = false;
-            setRpsDisabled(false);
-        }, 520);
-    }
-
-    // ------------------------------------------------------------ 专注计时
-
-    function loadFocus() {
-        try {
-            var raw = JSON.parse(localStorage.getItem(FOCUS_KEY) || 'null');
-            if (raw && typeof raw === 'object') {
-                return {
-                    endsAt: Number(raw.endsAt) || 0,
-                    minutes: Number(raw.minutes) || 25
-                };
-            }
-        } catch (error) {
-            /* 忽略损坏数据 */
-        }
-        return { endsAt: 0, minutes: 25 };
-    }
-
-    function saveFocus() {
-        try {
-            localStorage.setItem(FOCUS_KEY, JSON.stringify(focus));
-        } catch (error) {
-            /* 忽略 */
-        }
-    }
-
-    function focusRemaining() {
-        return Math.max(0, focus.endsAt - Date.now());
-    }
-
-    function focusActive() {
-        return focus.endsAt > 0;
-    }
-
-    function refreshFocusUi() {
-        if (!focusBox) return;
-        if (!focusActive()) {
-            focusBox.hidden = true;
-            return;
-        }
-        focusBox.hidden = false;
-        var remaining = focusRemaining();
-        var totalSeconds = Math.ceil(remaining / 1000);
-        var minutes = Math.floor(totalSeconds / 60);
-        var seconds = totalSeconds % 60;
-        focusTime.textContent = (minutes < 10 ? '0' : '') + minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
-        if (focusLabel) focusLabel.textContent = '专注中';
-        // 专注条出现/消失会改变 HUD 高度，热区需要跟着更新
-        if (hud.classList.contains('is-open')) ui.syncRegion();
-    }
-
-    function startFocus(minutes) {
-        minutes = minutes || 25;
-        focus.endsAt = Date.now() + minutes * 60000;
-        focus.minutes = minutes;
-        saveFocus();
-        refreshFocusUi();
-        ui.bubble('好，专心' + minutes + '分钟，我陪着你。');
-        ui.toast('专注开始：' + minutes + ' 分钟');
-        if (window.AnimePetUI.isHudOpen()) refreshHud();
-        return true;
-    }
-
-    function stopFocus(silent) {
-        var wasActive = focusActive();
-        focus.endsAt = 0;
-        saveFocus();
-        refreshFocusUi();
-        if (wasActive && !silent) {
-            ui.bubble('这次先休息一下，下次再一起加油。');
-        }
-    }
-
-    function completeFocus() {
-        var minutes = focus.minutes || 25;
-        focus.endsAt = 0;
-        saveFocus();
-        state.add({ exp: 12, affection: 2, energy: -6, mood: 4, stat: 'focus' }, 'focus-done');
-        state.note('focus', '陪你完成了 ' + minutes + ' 分钟专注');
-        ui.remind('专注 ' + minutes + ' 分钟完成！休息一下吧。', { title: 'AnimePet · 专注完成' });
-        playPetAnimation('is-happy-hop');
-        refreshFocusUi();
-        refreshHud();
-    }
-
-    ui.isHudOpen = function () {
-        return hud.classList.contains('is-open');
-    };
-    ui.startFocus = startFocus;
-    ui.stopFocus = stopFocus;
-    ui.focus = {
-        start: startFocus,
-        stop: stopFocus,
-        active: focusActive,
-        remaining: focusRemaining
-    };
-
-    // ------------------------------------------------------------ 提醒循环
-
-    function reminderTick() {
-        // 专注结束
-        if (focusActive() && focusRemaining() <= 0) {
-            completeFocus();
-        } else if (focusActive()) {
-            refreshFocusUi();
-        }
-
-        var settings = state.get().settings;
-        var now = Date.now();
-
-        if (settings.water) {
-            var last = Number(localStorage.getItem(WATER_KEY)) || 0;
-            if (!last) {
-                localStorage.setItem(WATER_KEY, String(now));
-            } else if (now - last >= WATER_INTERVAL) {
-                localStorage.setItem(WATER_KEY, String(now));
-                ui.remind(pick(['该喝水啦，别只顾着敲代码。', '起来活动一下，顺便喝口水吧。', '眼睛也需要休息，看看远处～']), {
-                    title: 'AnimePet · 喝水提醒'
-                });
-            }
-        }
-
-        if (settings.hourly) {
-            var hour = new Date().getHours();
-            if (hour !== lastHour) {
-                lastHour = hour;
-                ui.bubble((hour < 10 ? '0' : '') + hour + ':00 啦，整点报时。');
-            }
-        }
-
-        if (hud.classList.contains('is-open')) updateGiftUi(state.get());
-        state.tick();
-    }
-
-    window.setInterval(reminderTick, 1000);
-    // 数值面板每 15 秒同步一次衰减结果
-    window.setInterval(refreshHud, 15000);
-
     // ------------------------------------------------------------ 菜单动作
 
     function handleAction(action) {
@@ -712,7 +404,7 @@
                 break;
             case 'focus':
                 closeMenu();
-                startFocus(25);
+                if (window.AnimePetReminders) window.AnimePetReminders.start(25);
                 ui.openHud();
                 break;
             case 'chat':
@@ -725,7 +417,7 @@
                 break;
             case 'play':
                 closeMenu();
-                openRps();
+                if (window.AnimePetRps) window.AnimePetRps.open();
                 break;
             case 'hide-bubble':
                 closeMenu();
@@ -768,32 +460,11 @@
         }
         document.getElementById('hud-water').addEventListener('change', function (event) {
             state.setSetting('water', event.target.checked);
-            if (event.target.checked) localStorage.setItem(WATER_KEY, String(Date.now()));
+            if (event.target.checked && window.AnimePetReminders) window.AnimePetReminders.resetWaterTimer();
         });
         document.getElementById('hud-hourly').addEventListener('change', function (event) {
             state.setSetting('hourly', event.target.checked);
         });
-        tabButtons.forEach(function (button) {
-            button.addEventListener('click', function () {
-                selectTab(button.dataset.tab, true);
-            });
-        });
-        if (tabsBar) {
-            tabsBar.addEventListener('keydown', function (event) {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
-                var current = tabButtons.indexOf(document.activeElement);
-                if (current < 0) current = activeTabIndex;
-                var next = current;
-                if (event.key === 'ArrowLeft') next = (current + tabButtons.length - 1) % tabButtons.length;
-                else if (event.key === 'ArrowRight') next = (current + 1) % tabButtons.length;
-                else if (event.key === 'Home') next = 0;
-                else next = tabButtons.length - 1;
-                event.preventDefault();
-                tabButtons[next].focus();
-                selectTab(tabButtons[next].dataset.tab, true);
-            });
-        }
-        selectTab('status', false);
 
         Array.prototype.forEach.call(hud.querySelectorAll('.gift-btn'), function (button) {
             button.addEventListener('click', function () {
@@ -815,12 +486,12 @@
             button.addEventListener('click', function () {
                 var action = button.dataset.action;
                 if (action === 'feed') ui.feed();
-                else if (action === 'play') openRps();
-                else if (action === 'focus') startFocus(25);
+                else if (action === 'play' && window.AnimePetRps) window.AnimePetRps.open();
+                else if (action === 'focus' && window.AnimePetReminders) window.AnimePetReminders.start(25);
             });
         });
         document.getElementById('hud-focus-stop').addEventListener('click', function () {
-            stopFocus(false);
+            if (window.AnimePetReminders) window.AnimePetReminders.stop(false);
             refreshHud();
         });
 
@@ -830,15 +501,6 @@
             });
         });
 
-        Array.prototype.forEach.call(rps.querySelectorAll('.rps-choice'), function (button) {
-            button.addEventListener('click', function () {
-                playRps(button.dataset.hand);
-            });
-        });
-        document.getElementById('rps-close').addEventListener('click', closeRps);
-        rps.addEventListener('pointerdown', function (event) {
-            if (event.target === rps) closeRps();
-        });
 
         state.subscribe(function () {
             refreshHud();
@@ -876,7 +538,7 @@
     document.addEventListener('DOMContentLoaded', function () {
         bindUi();
         refreshHud();
-        refreshFocusUi();
+        if (window.AnimePetReminders) window.AnimePetReminders.refreshUi();
         // 每日签到：同一天只触发一次
         window.setTimeout(function () {
             var daily = state.checkDaily();
@@ -912,6 +574,6 @@
     if (document.readyState !== 'loading') {
         bindUi();
         refreshHud();
-        refreshFocusUi();
+        if (window.AnimePetReminders) window.AnimePetReminders.refreshUi();
     }
 })();

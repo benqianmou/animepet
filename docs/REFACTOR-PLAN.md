@@ -14,14 +14,14 @@
 | JS 尺寸写死 280/300 | `pet-interact.js` 改为读取 `#landlord.offsetWidth/offsetHeight` |
 | `main.rs` 仍有 server 循环 | 抽出 `src/server.rs`（路由/流式响应），main 降到 ~720 行 |
 | `pet-ui.js` 浮层逻辑 | 抽出 `js/pet-region.js`（overlay 登记、热区并集、placeNear） |
+| `pet-ui.js` 其余职责 | 拆出 `pet-tabs.js`（Tab/指示器）、`pet-rps.js`（猜拳）、`pet-reminders.js`（专注/喝水/报时） |
 
 回归：`cargo test` 20 passed；`node --check` 全通过；无头 QA 7/7（热区并集、tab、礼物、回忆、聊天开关、零脚本错误）；真机 `app_ready` + `model_ready` 正常。
 
 ## 剩余计划（按风险从低到高）
 
 1. ~~模型清单单一来源~~（已完成）
-2. ~~`pet-ui.js` 拆分~~（浮层已拆；其余 Tab/游戏/提醒仍在一起）
-3. **`pet-ui.js` 其余拆分**
+2. ~~`pet-ui.js` 拆分~~（已完成：region / tabs / rps / reminders）
    - `pet-region.js`（输入热区并集）、`pet-tabs.js`、`pet-games.js`、`pet-reminders.js`。
    - 收益：单文件从 800+ 行降到 200 行级；风险：中（模块加载顺序与全局 `window.AnimePetUI` 契约）。
 4. **`src/main.rs` 拆分**（已完成 http_util/chat/speech/state/server，剩 GTK UI 与装配）

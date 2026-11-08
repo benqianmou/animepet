@@ -184,7 +184,10 @@ animepet/
     │   │   ├── cubism3.js  # Cubism 3/4 模型渲染
     │   │   ├── pet-state.js# 陪伴数值 / 心情 / 阶段 / 礼物 / 签到 / 回忆
     │   │   ├── pet-region.js # 浮层登记 / 输入热区并集 / 面板定位
-    │   │   ├── pet-ui.js   # 陪伴中心 Tab / 菜单 / 猜拳 / 专注 / 提醒
+    │   │   ├── pet-ui.js   # 陪伴中心核心 / 菜单 / 投喂 / 礼物 / 日记
+    │   │   ├── pet-tabs.js # 状态 / 互动 / 回忆 Tab 与指示器
+    │   │   ├── pet-rps.js  # 猜拳小游戏
+    │   │   ├── pet-reminders.js # 专注番茄钟 / 喝水 / 整点报时
     │   │   ├── pet-interact.js # 手势 / 抛掷物理 / 待机行为
     │   │   ├── chat.js     # 聊天、TTS 播放与 STT 录音
     │   │   └── vendor/     # jQuery / PIXI / Cubism 运行库
