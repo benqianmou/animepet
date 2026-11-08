@@ -1,0 +1,39 @@
+{
+  "models": [
+    {
+      "id": "katoumegumi",
+      "name": "加藤惠",
+      "format": "sdk2",
+      "model": "model/katou_01/katou_01.model.json",
+      "texture": "model/katou_01/moc/katou.2048/texture_00.png"
+    },
+    {
+      "id": "rem",
+      "name": "蕾姆",
+      "format": "sdk2",
+      "model": "../rem/rem.json",
+      "texture": "../rem/remu2048/texture_00.png"
+    },
+    {
+      "id": "megumin",
+      "name": "惠惠",
+      "format": "cubism3",
+      "model": "../megumin/megumin.model3.json",
+      "texture": "../megumin/textures/texture_00.png"
+    },
+    {
+      "id": "darkness",
+      "name": "达克妮丝",
+      "format": "cubism3",
+      "model": "../darkness/darkness.model3.json",
+      "texture": "../darkness/textures/texture_00.png"
+    },
+    {
+      "id": "aqua",
+      "name": "阿克娅",
+      "format": "cubism3",
+      "model": "../aqua/aqua.model3.json",
+      "texture": "../aqua/textures/texture_00.png"
+    }
+  ]
+}

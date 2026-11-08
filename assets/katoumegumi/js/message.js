@@ -1,4 +1,5 @@
-var home_Path = document.location.protocol +'//' + window.document.location.host +'/';
+// 静态资源根目录（与 index.html 同源）。原先由 index.html 的内联脚本注入。
+var message_Path = './';
 
 var userAgent = window.navigator.userAgent.toLowerCase();
 console.log(userAgent);
@@ -18,150 +19,69 @@ if(!window.WebGLRenderingContext){
 }
 
 if(!norunFlag){
-	var hitFlag = false;
-	var liveTlakTimer = null;
-	var sleepTimer_ = null;
-	(function (){
-		$(document).on('copy', function (){
-			showMessage('你都复制了些什么呀，转载要记得加上出处哦~~');
-		});
-		
-		function initTips(){
-			$.ajax({
-				cache: true,
-				url: message_Path+'message.json',
-				dataType: "json",
-				success: function (result){
-					$.each(result.click, function (index, tips){
-						$(tips.selector).click(function (){
-							if(hitFlag){
-								return false
-							}
-							hitFlag = true;
-							setTimeout(function(){
-								hitFlag = false;
-							},8000);
-							var text = tips.text;
-							if(Array.isArray(tips.text)) text = tips.text[Math.floor(Math.random() * tips.text.length + 1)-1];
-							showMessage(text);
-						});
-						clearInterval(liveTlakTimer);
-						liveTlakTimer = null;
-						if(liveTlakTimer == null){
-							liveTlakTimer = window.setInterval(function(){
-								showHitokoto();
-							},15000);
-						};
-					});
-				}
-			});
-		}
-		initTips();
-	
-		var text;
-		if(document.referrer !== ''){
-			var referrer = document.createElement('a');
-			referrer.href = document.referrer;
-			text = '嗨！来自 <span style="color:#0099cc;">' + referrer.hostname + '</span> 的朋友！';
-			var domain = referrer.hostname.split('.')[1];
-			if (domain == 'baidu') {
-				text = '嗨！ 来自 百度搜索 的朋友！<br>欢迎访问<span style="color:#0099cc;">「 ' + document.title.split(' - ')[0] + ' 」</span>';
-			}else if (domain == 'so') {
-				text = '嗨！ 来自 360搜索 的朋友！<br>欢迎访问<span style="color:#0099cc;">「 ' + document.title.split(' - ')[0] + ' 」</span>';
-			}else if (domain == 'google') {
-				text = '嗨！ 来自 谷歌搜索 的朋友！<br>欢迎访问<span style="color:#0099cc;">「 ' + document.title.split(' - ')[0] + ' 」</span>';
-			}
-		}else {
-			if (window.location.href == home_Path) { //主页URL判断，需要斜杠结尾
-				var now = (new Date()).getHours();
-				if (now > 23 || now <= 5) {
-					text = '你是夜猫子呀？这么晚还不睡觉，明天起的来嘛？';
-				} else if (now > 5 && now <= 7) {
-					text = '早上好！一日之计在于晨，美好的一天就要开始了！';
-				} else if (now > 7 && now <= 11) {
-					text = '上午好！工作顺利嘛，不要久坐，多起来走动走动哦！';
-				} else if (now > 11 && now <= 14) {
-					text = '中午了，工作了一个上午，现在是午餐时间！';
-				} else if (now > 14 && now <= 17) {
-					text = '午后很容易犯困呢，今天的运动目标完成了吗？';
-				} else if (now > 17 && now <= 19) {
-					text = '傍晚了！窗外夕阳的景色很美丽呢，最美不过夕阳红~~';
-				} else if (now > 19 && now <= 21) {
-					text = '晚上好，今天过得怎么样？';
-				} else if (now > 21 && now <= 23) {
-					text = '已经这么晚了呀，早点休息吧，晚安~~';
-				} else {
-					text = '嗨~ 快来逗我玩吧！';
-				}
-			}else {
-				text = '欢迎阅读<span style="color:#0099cc;">「 ' + document.title.split(' - ')[0] + ' 」</span>';
-			}
-		}
-		showMessage(text);
-	})();
-	
-	liveTlakTimer = setInterval(function(){
-		showHitokoto();
-	},15000);
-	
-	function showHitokoto(){
-		if(sessionStorage.getItem("Sleepy")!=="1"){
-			$.getJSON('https://sslapi.hitokoto.cn/',function(result){
-				talkValTimer();
-				showMessage(result.hitokoto);
-			}).fail(function(){
-				showMessage('(｡•́︿•̀｡) 网络开小差了~');
-			});
-		}else{
-			hideMessage(0);
-			if(sleepTimer_==null){
-				sleepTimer_ = setInterval(function(){
-					checkSleep();
-				},200);
-			}
-			console.log(sleepTimer_);
-		}
+	function bootHint(text, isError) {
+		var node = document.getElementById('boot-hint');
+		if (!node) return;
+		node.textContent = text || '';
+		node.classList.toggle('is-error', !!isError);
+		node.classList.remove('is-hidden');
 	}
-	
-	function checkSleep(){
-		var sleepStatu = sessionStorage.getItem("Sleepy");
-		if(sleepStatu!=='1'){
-			talkValTimer();
-			showMessage('你回来啦~');
-			clearInterval(sleepTimer_);
-			sleepTimer_= null;
-		}
+
+	function hideBootHint() {
+		var node = document.getElementById('boot-hint');
+		if (node) node.classList.add('is-hidden');
 	}
-	
+
 	function showMessage(text){
-		if(Array.isArray(text)) text = text[Math.floor(Math.random() * text.length + 1)-1];
-		$('.message').stop();
+		if(Array.isArray(text)) text = text[Math.floor(Math.random() * text.length)];
+		$('.message').stop(true, true);
 		$('.message').html(text);
 		$('.message').fadeTo(200, 1);
 	}
-	function talkValTimer(){
-		$('#live_talk').val('1');
-	}
-	
 	function hideMessage(timeout){
 		if (timeout === null) timeout = 5000;
 		$('.message').delay(timeout).fadeTo(200, 0);
 	}
+	window.animePetShowMessage = showMessage;
 
+	// v2：改为纯本地问候。v1 的 hitokoto 轮询离线时会每 15 秒弹一次网络错误。
+	function localGreeting(){
+		var now = (new Date()).getHours();
+		if (now > 23 || now <= 5) return '你是夜猫子呀？这么晚还不睡，明天起得来吗。';
+		if (now > 5 && now <= 7) return '早上好，一日之计在于晨。';
+		if (now > 7 && now <= 11) return '上午好，工作顺利嘛？别久坐哦。';
+		if (now > 11 && now <= 14) return '中午了，该去吃午饭啦。';
+		if (now > 14 && now <= 17) return '午后容易犯困，起来走走。';
+		if (now > 17 && now <= 19) return '傍晚了，今天过得怎么样？';
+		if (now > 19 && now <= 21) return '晚上好，辛苦了。';
+		return '已经这么晚了，早点休息吧。';
+	}
+	window.animePetGreeting = localGreeting;
+	window.setTimeout(function(){
+		if (!live2dModelReady) return;
+		showMessage(localGreeting());
+	}, 2800);
+
+	// 模型清单的单一来源是 assets/models.json；这里只保留首模型作为加载失败兜底。
 	var live2dModels = [
 		{
 			id: 'katoumegumi',
 			name: '加藤惠',
 			model: 'model/katou_01/katou_01.model.json',
 			texture: 'model/katou_01/moc/katou.2048/texture_00.png'
-		},
-		{
-			id: 'rem',
-			name: '蕾姆',
-			model: '../rem/rem.json',
-			texture: '../rem/remu2048/texture_00.png'
 		}
 	];
+
+	var live2dModelsLoaded = fetch(message_Path + 'models.json')
+		.then(function (response) { return response.ok ? response.json() : null; })
+		.then(function (data) {
+			if (data && Array.isArray(data.models) && data.models.length) {
+				live2dModels = data.models;
+			}
+		})
+		.catch(function (error) {
+			console.warn('[AnimePet] models.json 加载失败，使用内置兜底模型:', error);
+		});
 	var live2dModelStorageKey = 'animepet-model';
 	var activeLive2dModel = live2dModels[0];
 	var live2dModelReady = false;
@@ -183,9 +103,14 @@ if(!norunFlag){
 		}));
 	}
 
-	function replaceLive2dModel(modelPath, initialLoad) {
+	function replaceLive2dModel(model, initialLoad) {
+		if (model.format === 'cubism3') {
+			// Cubism3 模型走 PIXI + Cubism Core 渲染管线（js/cubism3.js）。
+			// 内部会停掉旧版 SDK2 的渲染循环并隐藏旧画布。
+			return window.AnimePetCubism3.load(model, message_Path);
+		}
 		if (initialLoad) {
-			loadlive2d('live2d', message_Path + modelPath);
+			loadlive2d('live2d', message_Path + model.model);
 			return;
 		}
 
@@ -196,7 +121,7 @@ if(!norunFlag){
 		try {
 			window.addEventListener = function() {};
 			document.addEventListener = function() {};
-			loadlive2d('live2d', message_Path + modelPath);
+			loadlive2d('live2d', message_Path + model.model);
 		} finally {
 			window.addEventListener = windowAddEventListener;
 			document.addEventListener = documentAddEventListener;
@@ -204,6 +129,13 @@ if(!norunFlag){
 	}
 
 	function activateLive2dModel(model, initialLoad) {
+		// Cubism3 模型会永久停掉旧版 SDK2 渲染循环（该循环没有恢复接口），
+		// 因此从 Cubism3 切回旧版模型时整页重载，靠 localStorage 恢复选择。
+		if (!initialLoad && activeLive2dModel.format === 'cubism3' && model.format !== 'cubism3') {
+			localStorage.setItem(live2dModelStorageKey, model.id);
+			window.location.reload();
+			return;
+		}
 		activeLive2dModel = model;
 		live2dModelReady = false;
 		localStorage.setItem(live2dModelStorageKey, model.id);
@@ -214,18 +146,44 @@ if(!norunFlag){
 
 		var texture = new Image();
 		texture.onload = function() {
-			replaceLive2dModel(model.model, initialLoad);
-			setTimeout(function() {
-				$('#landlord').fadeIn(200);
-				live2dModelReady = true;
-				notifyLive2dModel(false);
-				if (!initialLoad) showMessage('已切换到' + model.name);
-			}, 1000);
+			var result = replaceLive2dModel(model, initialLoad);
+			var settled = false;
+			function markModelReady() {
+				if (settled) return;
+				settled = true;
+				// 等一帧让首次绘制完成，再隐藏启动提示并上报 model_ready
+				window.requestAnimationFrame(function() {
+					window.setTimeout(function() {
+						$('#landlord').fadeIn(200);
+						live2dModelReady = true;
+						notifyLive2dModel(false);
+						hideBootHint();
+						document.title = 'model_ready';
+						if (!initialLoad) showMessage('已切换到' + model.name);
+					}, 260);
+				});
+			}
+			if (result && typeof result.then === 'function') {
+				// Cubism3：必须等模型资源真正加载完，不能只等贴图 onload
+				result.then(markModelReady).catch(function() {
+					settled = true;
+					bootHint(model.name + ' 模型加载失败', true);
+					showMessage(model.name + '模型资源加载失败');
+				});
+			} else {
+				// SDK2：loadlive2d 同步创建画布，给一帧绘制时间
+				markModelReady();
+			}
+			// 兜底：8 秒仍未 ready 就明确提示，而不是无声空白
+			window.setTimeout(function() {
+				if (!live2dModelReady) bootHint(model.name + ' 模型加载超时', true);
+			}, 8000);
 			texture = null;
 		};
 		texture.onerror = function() {
 			live2dModelReady = true;
 			notifyLive2dModel(false);
+			bootHint(model.name + ' 模型资源加载失败', true);
 			showMessage(model.name + '模型资源加载失败');
 		};
 		texture.src = message_Path + model.texture;
@@ -255,10 +213,15 @@ if(!norunFlag){
 		$('#landlord').css('left', landL + 'px');
 		$('#landlord').css('bottom', landB + 'px');
 	}
-	// 拖拽已由 index.html 独立实现（并写入 historywidth/historyheight 持久化位置），
+	// 拖拽由 js/pet-interact.js 实现（并写入 historywidth/historyheight 持久化位置），
 	// 原 getEvent() 实现依赖 arguments.callee.caller，在现代 WebKitGTK 下失效，故移除。
 	$(document).ready(function() {
 		initLive2d();
-		activateLive2dModel(activeLive2dModel, true);
+		// 通知 Rust：页面 JS 已经跑起来（用于启动看门狗，避免透明窗口卡死）
+		document.title = 'app_ready';
+		live2dModelsLoaded.then(function() {
+			activeLive2dModel = findLive2dModel(localStorage.getItem(live2dModelStorageKey));
+			activateLive2dModel(activeLive2dModel, true);
+		});
 	});
 }
